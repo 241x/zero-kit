@@ -9,6 +9,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
+	github.com/wneessen/go-mail v0.7.3
 	go.mongodb.org/mongo-driver v1.17.9
 	golang.org/x/crypto v0.52.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1

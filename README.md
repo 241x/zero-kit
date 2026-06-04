@@ -10,6 +10,7 @@
 - **统一日志** — 基于 zerolog，支持控制台 / 文件轮转 / MongoDB 多写入器，可通过 context 传递
 - **统一错误** — 自定义错误码体系，兼容 `errors.Is` / `errors.Unwrap` 标准库协议
 - **HTTP 客户端** — 链式配置，支持 JSON / Form / 文件上传，可插拔日志记录
+- **邮件发送** — 基于 go-mail 封装，支持纯文本 / HTML / 抄送密送 / 附件，未配置 SMTP 时静默降级
 - **数据库迁移** — SQL 脚本断点续迁，进度持久化，适合大脚本增量执行
 
 ## 安装
@@ -30,6 +31,7 @@ go get github.com/241x/zero-kit
 | `httpclient` | HTTP 客户端封装。通过 `Option` 模式配置超时、UserAgent、Logger；提供 `Get`、`Post`、`PostJSON`、`PostForm`、`PostFile`、`Put`、`Delete` 等快捷方法；响应对象支持 `JSON()` 解析和 `IsSuccess()` 判断；请求级别可通过 `RequestOption` 设置 Header、Cookie、Query 参数 |
 | `locker` | 分布式锁接口与 Redis 实现。`Locker` / `Lock` 双层接口设计；通过 Lua 脚本保证「令牌匹配才释放」的安全性；支持 `WithWatchDog()` 开启看门狗协程，按 TTL/3 间隔自动续期，防止业务未完成锁已过期 |
 | `logger` | 统一日志接口及 zerolog 实现。定义 `Debug` / `Info` / `Warn` / `Error` / `Err` / `Log` 标准方法；支持控制台彩色输出、lumberjack 文件轮转、MongoDB 写入器，可通过 `io.MultiWriter` 组合多输出目标；提供 `WithContext` / `Ctx` 实现日志实例在 context 中的传递 |
+| `mailer` | 邮件发送封装（基于 go-mail）。`Config` 配置 SMTP 并通过 `Validate()` 校验；提供 `Send`（纯文本）、`SendHTML`（HTML）、`SendMessage`（抄送 / 密送 / 附件 / 回复地址）三级发送接口；未配置 Host 时静默降级，发送操作返回 `ErrNotInitialized`；`Close()` 安全释放连接资源 |
 | `migrate` | SQL 数据库迁移器。以 `-- [CHECK POINT] --` 标记分段执行 SQL 脚本；通过 `ProgressStore` 接口持久化执行进度（默认文件存储），支持断点续迁；`ScriptReader` 接口可替换为自定义脚本来源 |
 | `mongodb` | MongoDB 连接管理。通过 `Config` 配置 URI 和数据库名，`Enabled` 字段控制是否启用连接；返回 `Conn` 结构体包含 `Client` 和 `DB` 实例，连接时自动 Ping 验证 |
 | `mysql` | MySQL 连接管理（GORM）。支持表前缀和单数表名配置，默认禁用自动迁移外键约束；内置自定义 SQL Logger，自动从 context 提取 traceId、记录慢查询（>1s 告警）、SQL 执行耗时和行数 |
@@ -283,6 +285,49 @@ func main() {
 }
 ```
 
+### 邮件发送
+
+```go
+package main
+
+import (
+    "github.com/241x/zero-kit/mailer"
+)
+
+func main() {
+    // 创建邮件发送器（Host 为空时静默降级，不影响程序启动）
+    m := mailer.NewMailer(mailer.Config{
+        Host:        "smtp.example.com",
+        Port:        465,
+        Username:    "user@example.com",
+        Password:    "password",
+        FromAddress: "user@example.com",
+        FromName:    "MyApp",
+        UseTLS:      true,
+    }, nil)
+    defer m.Close()
+
+    // 发送纯文本邮件
+    _ = m.Send([]string{"to@example.com"}, "主题", "正文内容")
+
+    // 发送 HTML 邮件
+    _ = m.SendHTML([]string{"to@example.com"}, "欢迎", "<h1>欢迎注册</h1>")
+
+    // 发送带抄送、密送、附件的邮件
+    _ = m.SendMessage(&mailer.Message{
+        To:       []string{"to@example.com"},
+        Cc:       []string{"cc@example.com"},
+        Bcc:      []string{"bcc@example.com"},
+        Subject:  "报表",
+        HTMLBody: "<p>请查看附件</p>",
+        ReplyTo:  "reply@example.com",
+        Attachments: []mailer.Attachment{
+            {Name: "report.xlsx", FilePath: "/tmp/report.xlsx"},
+        },
+    })
+}
+```
+
 ### 数据库迁移
 
 ```go
@@ -323,6 +368,7 @@ func main() {
 | [lumberjack](https://gopkg.in/natefinch/lumberjack.v2) | 日志文件轮转 |
 | [uuid](https://github.com/google/uuid) | UUID 生成 |
 | [crypto](https://golang.org/x/crypto) | bcrypt 密码哈希 |
+| [go-mail](https://github.com/wneessen/go-mail) | SMTP 邮件发送 |
 
 ## 许可证
 
