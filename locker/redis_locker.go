@@ -61,13 +61,13 @@ func (l *redisLock) Extend(ctx context.Context, ttl time.Duration) error {
 // Lock 获取分布式锁
 func (l *RedisLocker) Lock(ctx context.Context, key string, opts ...LockOption) (Lock, error) {
 	// 应用选项
-	options := defaultLockOptions()
+	options := DefaultLockOptions()
 	for _, opt := range opts {
 		opt(options)
 	}
 
 	// 生成令牌
-	token := generateToken()
+	token := GenerateToken()
 
 	// 尝试获取锁
 	lock, err := l.tryLock(ctx, key, token, options.TTL)
@@ -197,8 +197,8 @@ func (l *RedisLocker) startWatchDog(ctx context.Context, lock *redisLock, ttl ti
 	}
 }
 
-// generateToken 生成唯一的随机令牌
-func generateToken() string {
+// GenerateToken 生成唯一的随机令牌
+func GenerateToken() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)

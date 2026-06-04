@@ -1,46 +1,47 @@
-package locker
+package locker_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/241x/zero-kit/locker"
 )
 
-// setupTestRedis 设置测试 Redis 客户端
-func setupTestRedis(t *testing.T) *redis.Client {
-	client := redis.NewClient(&redis.Options{
-		Addr:     "192.168.91.100:6379",
-		Password: "123456",
-		DB:       1, // 使用 DB 1 进行测试
-	})
+// setupTestRedis 创建基于 miniredis 的测试 Redis 客户端
+func setupTestRedis(t *testing.T) (*redis.Client, func()) {
+	t.Helper()
 
-	ctx := context.Background()
-	err := client.Ping(ctx).Err()
-	if err != nil {
-		t.Skip("Redis not available, skipping test")
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	require.NoError(t, client.Ping(context.Background()).Err())
+
+	cleanup := func() {
+		client.Close()
+		mr.Close()
 	}
 
-	// 测试前清空数据库
-	client.FlushDB(ctx)
-
-	return client
+	return client, cleanup
 }
 
 // TestRedisLocker_LockAndUnlock 测试基本的加锁和解锁
 func TestRedisLocker_LockAndUnlock(t *testing.T) {
-	client := setupTestRedis(t)
-	defer client.Close()
+	client, cleanup := setupTestRedis(t)
+	defer cleanup()
 
-	locker := NewRedisLocker(client)
+	l := locker.NewRedisLocker(client)
 	ctx := context.Background()
 	key := "test:lock:basic"
 
 	// 获取锁
-	lock, err := locker.Lock(ctx, key, WithTTL(10*time.Second))
+	lock, err := l.Lock(ctx, key, locker.WithTTL(10*time.Second))
 	require.NoError(t, err)
 	assert.NotNil(t, lock)
 	assert.Equal(t, key, lock.Key())
@@ -50,28 +51,29 @@ func TestRedisLocker_LockAndUnlock(t *testing.T) {
 	err = lock.Unlock(ctx)
 	require.NoError(t, err)
 
-	// 验证锁已释放（需要检查带前缀的 key）
+	// 验证锁已释放
 	exists, err := client.Exists(ctx, "lock:"+key).Result()
+	assert.NoError(t, err)
 	assert.Equal(t, int64(0), exists)
 }
 
 // TestRedisLocker_LockConflict 测试锁冲突
 func TestRedisLocker_LockConflict(t *testing.T) {
-	client := setupTestRedis(t)
-	defer client.Close()
+	client, cleanup := setupTestRedis(t)
+	defer cleanup()
 
-	locker := NewRedisLocker(client)
+	l := locker.NewRedisLocker(client)
 	ctx := context.Background()
 	key := "test:lock:conflict"
 
 	// 第一次获取锁
-	lock1, err := locker.Lock(ctx, key, WithTTL(10*time.Second))
+	lock1, err := l.Lock(ctx, key, locker.WithTTL(10*time.Second))
 	require.NoError(t, err)
 
 	// 第二次获取同一把锁应该失败
-	lock2, err := locker.Lock(ctx, key, WithTTL(10*time.Second))
+	lock2, err := l.Lock(ctx, key, locker.WithTTL(10*time.Second))
 	assert.Error(t, err)
-	assert.Equal(t, ErrLockAcquired, err)
+	assert.ErrorIs(t, err, locker.ErrLockAcquired)
 	assert.Nil(t, lock2)
 
 	// 释放第一把锁
@@ -79,7 +81,7 @@ func TestRedisLocker_LockConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	// 现在可以获取锁了
-	lock3, err := locker.Lock(ctx, key, WithTTL(10*time.Second))
+	lock3, err := l.Lock(ctx, key, locker.WithTTL(10*time.Second))
 	require.NoError(t, err)
 	assert.NotNil(t, lock3)
 	lock3.Unlock(ctx)
@@ -87,22 +89,22 @@ func TestRedisLocker_LockConflict(t *testing.T) {
 
 // TestRedisLocker_Extend 测试锁延期
 func TestRedisLocker_Extend(t *testing.T) {
-	client := setupTestRedis(t)
-	defer client.Close()
+	client, cleanup := setupTestRedis(t)
+	defer cleanup()
 
-	locker := NewRedisLocker(client)
+	l := locker.NewRedisLocker(client)
 	ctx := context.Background()
 	key := "test:lock:extend"
 
 	// 获取锁，过期时间 2 秒
-	lock, err := locker.Lock(ctx, key, WithTTL(2*time.Second))
+	lock, err := l.Lock(ctx, key, locker.WithTTL(2*time.Second))
 	require.NoError(t, err)
 
 	// 延期到 10 秒
 	err = lock.Extend(ctx, 10*time.Second)
 	require.NoError(t, err)
 
-	// 验证过期时间已延长（需要检查带前缀的 key）
+	// 验证过期时间已延长
 	ttl, err := client.TTL(ctx, "lock:"+key).Result()
 	require.NoError(t, err)
 	assert.Greater(t, ttl.Seconds(), 5.0)
@@ -112,40 +114,40 @@ func TestRedisLocker_Extend(t *testing.T) {
 
 // TestRedisLocker_InvalidTokenUnlock 测试使用错误令牌解锁
 func TestRedisLocker_InvalidTokenUnlock(t *testing.T) {
-	client := setupTestRedis(t)
-	defer client.Close()
+	client, cleanup := setupTestRedis(t)
+	defer cleanup()
 
-	locker := NewRedisLocker(client)
+	l := locker.NewRedisLocker(client)
 	ctx := context.Background()
 	key := "test:lock:invalid_token"
 
 	// 获取锁
-	lock, err := locker.Lock(ctx, key, WithTTL(10*time.Second))
+	lock, err := l.Lock(ctx, key, locker.WithTTL(10*time.Second))
 	require.NoError(t, err)
 
-	// 创建一个新的锁对象，使用不同的 token
-	wrongLock := &redisLock{
-		key:    key,
-		token:  "wrong_token",
-		client: client,
-	}
+	// 通过 raw Redis 将 token 覆盖为错误值，模拟 token 不匹配场景
+	err = client.Set(ctx, "lock:"+key, "wrong_token", 0).Err()
+	require.NoError(t, err)
 
 	// 尝试用错误的 token 解锁
-	err = wrongLock.Unlock(ctx)
+	err = lock.Unlock(ctx)
 	assert.Error(t, err)
-	assert.Equal(t, ErrInvalidToken, err)
+	assert.ErrorIs(t, err, locker.ErrInvalidToken)
 
-	// 正确的锁应该还能解锁
+	// 恢复正确的 token，验证锁仍能被正确解锁
+	err = client.Set(ctx, "lock:"+key, lock.Token(), 0).Err()
+	require.NoError(t, err)
+
 	err = lock.Unlock(ctx)
 	require.NoError(t, err)
 }
 
 // TestRedisLocker_ConcurrentLock 测试并发加锁
 func TestRedisLocker_ConcurrentLock(t *testing.T) {
-	client := setupTestRedis(t)
-	defer client.Close()
+	client, cleanup := setupTestRedis(t)
+	defer cleanup()
 
-	locker := NewRedisLocker(client)
+	l := locker.NewRedisLocker(client)
 	ctx := context.Background()
 	key := "test:lock:concurrent"
 
@@ -154,7 +156,7 @@ func TestRedisLocker_ConcurrentLock(t *testing.T) {
 	// 10 个协程同时尝试获取同一把锁
 	for range 10 {
 		go func() {
-			lock, err := locker.Lock(ctx, key, WithTTL(5*time.Second))
+			lock, err := l.Lock(ctx, key, locker.WithTTL(5*time.Second))
 			if err != nil {
 				results <- err
 				return
@@ -171,7 +173,7 @@ func TestRedisLocker_ConcurrentLock(t *testing.T) {
 		err := <-results
 		if err == nil {
 			successCount++
-		} else if err == ErrLockAcquired {
+		} else if err == locker.ErrLockAcquired {
 			failCount++
 		}
 	}
@@ -183,8 +185,8 @@ func TestRedisLocker_ConcurrentLock(t *testing.T) {
 
 // TestGenerateToken 测试令牌生成
 func TestGenerateToken(t *testing.T) {
-	token1 := generateToken()
-	token2 := generateToken()
+	token1 := locker.GenerateToken()
+	token2 := locker.GenerateToken()
 
 	// 令牌长度应该是 32 字节的十六进制表示
 	assert.Len(t, token1, 32)
@@ -196,13 +198,13 @@ func TestGenerateToken(t *testing.T) {
 
 // TestLockOptions 测试选项函数
 func TestLockOptions(t *testing.T) {
-	opts := defaultLockOptions()
+	opts := locker.DefaultLockOptions()
 	assert.Equal(t, 30*time.Second, opts.TTL)
 	assert.False(t, opts.WatchDog)
 
 	// 应用自定义选项
-	WithTTL(60 * time.Second)(opts)
-	WithWatchDog()(opts)
+	locker.WithTTL(60 * time.Second)(opts)
+	locker.WithWatchDog()(opts)
 
 	assert.Equal(t, 60*time.Second, opts.TTL)
 	assert.True(t, opts.WatchDog)

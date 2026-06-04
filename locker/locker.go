@@ -22,8 +22,8 @@ type LockOptions struct {
 	WatchDog bool          // 是否启用看门狗自动续期
 }
 
-// defaultLockOptions 默认选项
-func defaultLockOptions() *LockOptions {
+// DefaultLockOptions 默认选项
+func DefaultLockOptions() *LockOptions {
 	return &LockOptions{
 		TTL:      30 * time.Second,
 		WatchDog: false,
