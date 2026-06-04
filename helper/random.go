@@ -1,16 +1,12 @@
 package helper
 
 import (
-	"math/rand"
-	"time"
+	"math/rand/v2"
 )
 
-// _rand 随机数生成器
-var _rand = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-// RandomInt 获取随机数
+// RandomInt 获取随机数（并发安全）
 func RandomInt(n int) int {
-	return _rand.Intn(n)
+	return rand.IntN(n)
 }
 
 // RandomString 随机字符串
