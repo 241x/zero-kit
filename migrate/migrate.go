@@ -225,7 +225,7 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 		m.logger.Debug("Executing SQL", "sql", stmt.SQL, "line_number", stmt.LineNum)
 
 		if stmt.SQL != "" {
-			if err := m.db.Exec(stmt.SQL).Error; err != nil {
+			if err := m.db.WithContext(ctx).Exec(stmt.SQL).Error; err != nil {
 				return wrapError("db.Exec", err)
 			}
 		}
