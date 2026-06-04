@@ -1,6 +1,8 @@
 package mysql
 
 import (
+	"fmt"
+
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -14,7 +16,7 @@ type Config struct {
 }
 
 // NewDB 获取数据库连接
-func NewDB(cfg Config, logger logger.Interface) *gorm.DB {
+func NewDB(cfg Config, logger logger.Interface) (*gorm.DB, error) {
 	db, err := gorm.Open(mysql.Open(cfg.Dsn), &gorm.Config{
 		Logger: logger,
 
@@ -28,8 +30,8 @@ func NewDB(cfg Config, logger logger.Interface) *gorm.DB {
 	})
 
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("mysql connect failed: %w", err)
 	}
 
-	return db
+	return db, nil
 }

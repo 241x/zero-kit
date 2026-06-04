@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -20,9 +21,9 @@ type Conn struct {
 	DB     *mongo.Database
 }
 
-func NewConn(cfg Config) *Conn {
+func NewConn(cfg Config) (*Conn, error) {
 	if !cfg.Enabled {
-		return &Conn{}
+		return &Conn{}, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -31,16 +32,16 @@ func NewConn(cfg Config) *Conn {
 	clientOptions := options.Client().ApplyURI(cfg.URI)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("mongodb connect failed: %w", err)
 	}
 
 	// Ping the primary
 	if err := client.Ping(ctx, nil); err != nil {
-		panic(err)
+		return nil, fmt.Errorf("mongodb ping failed: %w", err)
 	}
 
 	return &Conn{
 		Client: client,
 		DB:     client.Database(cfg.Database),
-	}
+	}, nil
 }
