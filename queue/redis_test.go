@@ -295,7 +295,7 @@ func TestRedisQueue_DelayedTask_Ready(t *testing.T) {
 
 	// 通过 go-redis 客户端直接修改 ZSet score 为过去时间，模拟延迟到期
 	// 注意：miniredis.FastForward 只影响 Redis 内部 TTL，不影响 Go 的 time.Now()
-	delayedKey := "ZAG:QUEUE:test-queue:DELAYED"
+	delayedKey := "ZEROKIT:QUEUE:test-queue:DELAYED"
 	pastScore := float64(time.Now().Unix() - 10)
 	require.NoError(t, client.ZAdd(ctx, delayedKey, redis.Z{Score: pastScore, Member: task.ID}).Err())
 
@@ -478,14 +478,14 @@ func TestRedisQueue_IDReferenceDesign(t *testing.T) {
 	require.NoError(t, q.Enqueue(ctx, task))
 
 	// 验证立即执行队列中存储的是任务 ID（不是完整 JSON）
-	immediateKey := "ZAG:QUEUE:test-queue:IMMEDIATE"
+	immediateKey := "ZEROKIT:QUEUE:test-queue:IMMEDIATE"
 	listVals, err := client.LRange(ctx, immediateKey, 0, -1).Result()
 	require.NoError(t, err)
 	require.Len(t, listVals, 1)
 	assert.Equal(t, task.ID, listVals[0], "队列中应存储任务 ID，而非完整 JSON")
 
 	// 验证任务数据独立存储在 TASK:{id} key 中
-	taskKey := "ZAG:QUEUE:test-queue:TASK:" + task.ID
+	taskKey := "ZEROKIT:QUEUE:test-queue:TASK:" + task.ID
 	exists, err := client.Exists(ctx, taskKey).Result()
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), exists, "任务数据应独立存储在 TASK:{id} key 中")

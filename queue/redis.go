@@ -128,7 +128,7 @@ func NewRedisQueue(client *redis.Client, config QueueConfig) *RedisQueue {
 	return &RedisQueue{
 		client: client,
 		config: config,
-		prefix: "ZAG:QUEUE:" + config.Name + ":",
+		prefix: config.Prefix + config.Name + ":",
 	}
 }
 

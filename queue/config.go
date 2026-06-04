@@ -15,6 +15,7 @@ type QueueConfig struct {
 	DeadLetterMaxRetries      int                // 死信队列最大重试次数
 	DelayQueueScanInterval    time.Duration      // 延迟队列扫描间隔
 	ProcessingCleanupInterval time.Duration      // 处理中任务清理间隔
+	Prefix                    string             // Redis key 前缀
 }
 
 // RetryDelayStrategy 重试延迟策略
@@ -41,6 +42,7 @@ func DefaultConfig() QueueConfig {
 		DeadLetterMaxRetries:      3,
 		DelayQueueScanInterval:    time.Second,
 		ProcessingCleanupInterval: time.Minute,
+		Prefix:                    "ZEROKIT:QUEUE:",
 	}
 }
 
