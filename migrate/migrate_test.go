@@ -343,3 +343,89 @@ func TestMigrationError(t *testing.T) {
 	assert.Equal(t, innerErr, migrateErr.Unwrap())
 	assert.True(t, errors.Is(migrateErr, innerErr))
 }
+
+// setupDBProgressStore 创建 DBProgressStore 测试环境
+func setupDBProgressStore(t *testing.T) (*gorm.DB, *migrate.DBProgressStore) {
+	db := setupTestDB(t)
+	err := db.AutoMigrate(&migrate.MigrationProgress{})
+	assert.NoError(t, err)
+	store := migrate.NewDBProgressStore(db, "test_script.sql")
+	return db, store
+}
+
+// TestDBProgressStore_LoadEmpty 测试首次 Load 返回 0
+func TestDBProgressStore_LoadEmpty(t *testing.T) {
+	_, store := setupDBProgressStore(t)
+	lineNum, err := store.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 0, lineNum)
+}
+
+// TestDBProgressStore_SaveAndLoad 测试 Save 后 Load 能正确返回
+func TestDBProgressStore_SaveAndLoad(t *testing.T) {
+	_, store := setupDBProgressStore(t)
+
+	err := store.Save(42)
+	assert.NoError(t, err)
+
+	lineNum, err := store.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 42, lineNum)
+}
+
+// TestDBProgressStore_MultipleSaves 测试多次 Save 后 Load 返回最新值
+func TestDBProgressStore_MultipleSaves(t *testing.T) {
+	_, store := setupDBProgressStore(t)
+
+	for _, line := range []int{10, 20, 35, 50} {
+		err := store.Save(line)
+		assert.NoError(t, err)
+	}
+
+	lineNum, err := store.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 50, lineNum)
+}
+
+// TestDBProgressStore_DifferentScripts 测试不同脚本路径互不干扰
+func TestDBProgressStore_DifferentScripts(t *testing.T) {
+	db := setupTestDB(t)
+	err := db.AutoMigrate(&migrate.MigrationProgress{})
+	assert.NoError(t, err)
+
+	storeA := migrate.NewDBProgressStore(db, "script_a.sql")
+	storeB := migrate.NewDBProgressStore(db, "script_b.sql")
+
+	assert.NoError(t, storeA.Save(100))
+	assert.NoError(t, storeB.Save(200))
+
+	lineA, err := storeA.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 100, lineA)
+
+	lineB, err := storeB.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 200, lineB)
+}
+
+// TestDBProgressStore_SaveHistory 测试每次 Save 追加记录，保留完整迁移历史
+func TestDBProgressStore_SaveHistory(t *testing.T) {
+	db, store := setupDBProgressStore(t)
+
+	lines := []int{10, 20, 35, 50}
+	for _, line := range lines {
+		err := store.Save(line)
+		assert.NoError(t, err)
+	}
+
+	// 验证数据库中记录条数等于 Save 次数
+	var count int64
+	err := db.Model(&migrate.MigrationProgress{}).Where("script_path = ?", "test_script.sql").Count(&count).Error
+	assert.NoError(t, err)
+	assert.Equal(t, int64(len(lines)), count)
+
+	// 验证 Load 返回最新一条
+	lineNum, err := store.Load()
+	assert.NoError(t, err)
+	assert.Equal(t, 50, lineNum)
+}

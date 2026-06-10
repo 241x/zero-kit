@@ -83,6 +83,56 @@ type FileProgressStore struct {
 	timeFormat string
 }
 
+// MigrationProgress 迁移进度记录（数据库存储模型）
+type MigrationProgress struct {
+	ID         uint   `gorm:"primaryKey"`
+	ScriptPath string `gorm:"index;size:255;not null"`
+	LineNum    int    `gorm:"not null"`
+	UpdatedAt  time.Time
+}
+
+// DBProgressStore 数据库进度存储
+type DBProgressStore struct {
+	db         *gorm.DB
+	scriptPath string
+}
+
+// NewDBProgressStore 创建数据库进度存储
+func NewDBProgressStore(db *gorm.DB, scriptPath string) *DBProgressStore {
+	return &DBProgressStore{
+		db:         db,
+		scriptPath: scriptPath,
+	}
+}
+
+// Load 从数据库加载上次迁移断点
+func (s *DBProgressStore) Load() (int, error) {
+	var progress MigrationProgress
+	err := s.db.Where("script_path = ?", s.scriptPath).Order("id DESC").First(&progress).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return 0, nil
+		}
+		return 0, wrapError("db.First", err)
+	}
+	return progress.LineNum, nil
+}
+
+// Save 保存当前迁移进度到数据库
+func (s *DBProgressStore) Save(lineNum int) error {
+	progress := MigrationProgress{
+		ScriptPath: s.scriptPath,
+		LineNum:    lineNum,
+		UpdatedAt:  time.Now(),
+	}
+
+	err := s.db.Create(&progress).Error
+	if err != nil {
+		return wrapError("db.Create", err)
+	}
+	return nil
+}
+
 // NewFileProgressStore 创建文件进度存储
 func NewFileProgressStore(path string) *FileProgressStore {
 	return &FileProgressStore{
@@ -192,7 +242,7 @@ func NewMigrator(db *gorm.DB, scriptPath string, opts ...MigratorOption) *Migrat
 	m := &Migrator{
 		db:            db,
 		scriptReader:  NewFileScriptReader(scriptPath),
-		progressStore: NewFileProgressStore(scriptPath + DefaultProgressSuffix),
+		progressStore: NewDBProgressStore(db, scriptPath),
 		logger:        logger.Nop(),
 	}
 
@@ -209,6 +259,11 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+
+	// 确保迁移进度表存在
+	if err := m.db.WithContext(ctx).AutoMigrate(&MigrationProgress{}); err != nil {
+		return wrapError("AutoMigrate", err)
 	}
 
 	statements, err := m.parseSQLStatements()
