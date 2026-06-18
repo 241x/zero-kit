@@ -7,6 +7,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// ErrRecordNotFound 记录未找到
+var ErrRecordNotFound = gorm.ErrRecordNotFound
+
 // Filter 筛选器接口
 type Filter interface {
 	Apply(db *gorm.DB) *gorm.DB
@@ -61,31 +64,31 @@ type Order struct {
 // Orders 排序参数切片
 type Orders []Order
 
-// TxConfigurer 事务配置接口
-type TxConfigurer interface {
-	SetTx(tx *gorm.DB)
-	GetTx() *gorm.DB
+// DBConfigurer DB配置接口
+type DBConfigurer interface {
+	SetDB(db *gorm.DB)
+	GetDB() *gorm.DB
 }
 
-// TxConfig 事务配置
-type TxConfig struct {
-	tx *gorm.DB
+// DBConfig DB配置
+type DBConfig struct {
+	db *gorm.DB
 }
 
-// SetTx 设置事务
-func (c *TxConfig) SetTx(tx *gorm.DB) {
-	c.tx = tx
+// SetDB 设置DB
+func (c *DBConfig) SetDB(db *gorm.DB) {
+	c.db = db
 }
 
-// GetTx 获取事务
-func (c *TxConfig) GetTx() *gorm.DB {
-	return c.tx
+// GetDB 获取DB
+func (c *DBConfig) GetDB() *gorm.DB {
+	return c.db
 }
 
-// WithTx 添加事务
-func WithTx[T TxConfigurer](tx *gorm.DB) func(T) {
+// WithDB 注入DB
+func WithDB[T DBConfigurer](db *gorm.DB) func(T) {
 	return func(c T) {
-		c.SetTx(tx)
+		c.SetDB(db)
 	}
 }
 
@@ -97,7 +100,7 @@ type ScopeFunc func(*gorm.DB) *gorm.DB
 
 // QueryConfig 查询配置
 type QueryConfig struct {
-	TxConfig
+	DBConfig
 	preloads []string
 	scopes   []ScopeFunc
 }
@@ -121,7 +124,7 @@ type CreateOption func(*CreateConfig)
 
 // CreateConfig 创建配置
 type CreateConfig struct {
-	TxConfig
+	DBConfig
 	batchSize int
 }
 
@@ -137,7 +140,7 @@ type UpdateOption func(*UpdateConfig)
 
 // UpdateConfig 更新配置
 type UpdateConfig struct {
-	TxConfig
+	DBConfig
 }
 
 // DeleteOption 删除选项
@@ -145,7 +148,7 @@ type DeleteOption func(*DeleteConfig)
 
 // DeleteConfig 删除配置
 type DeleteConfig struct {
-	TxConfig
+	DBConfig
 	ForceDelete bool
 }
 
@@ -246,7 +249,10 @@ func (r *BaseRepository[T]) FindOne(ctx context.Context, id any, opts ...QueryOp
 		err = query.First(item, id).Error
 	}
 
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrRecordNotFound
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -317,10 +323,10 @@ func (r *BaseRepository[T]) buildQuery(ctx context.Context, opts ...QueryOption)
 }
 
 // getDb 获取数据库连接
-func (r *BaseRepository[T]) getDb(cfg TxConfigurer) *gorm.DB {
+func (r *BaseRepository[T]) getDb(cfg DBConfigurer) *gorm.DB {
 	if cfg != nil {
-		if tx := cfg.GetTx(); tx != nil {
-			return tx
+		if db := cfg.GetDB(); db != nil {
+			return db
 		}
 	}
 
