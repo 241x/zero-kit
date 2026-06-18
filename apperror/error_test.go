@@ -27,8 +27,8 @@ func TestCode_String(t *testing.T) {
 }
 
 func TestCode_Template(t *testing.T) {
-	if got := testUserNotFound.Template(); got != "用户不存在" {
-		t.Errorf("Template() = %q, want %q", got, "用户不存在")
+	if got := testUserNotFound.DefaultMsg(); got != "用户不存在" {
+		t.Errorf("DefaultMsg() = %q, want %q", got, "用户不存在")
 	}
 }
 

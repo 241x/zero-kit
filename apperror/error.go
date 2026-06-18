@@ -16,7 +16,7 @@ func (e *Error) Error() string {
 	if e.msg != "" {
 		return e.msg
 	}
-	return e.code.template
+	return e.code.defaultMsg
 }
 
 // Unwrap 实现 errors.Unwrap 协议，返回内部原因
@@ -40,7 +40,7 @@ func (e *Error) Is(target error) bool {
 	if !ok {
 		return false
 	}
-	return e.code == t.code
+	return e.code.value == t.code.value && e.code.name == t.code.name
 }
 
 // Format 实现 fmt.Formatter，支持 %+v 打印调试信息
@@ -83,6 +83,13 @@ func WithMsg(msg string) Option {
 	}
 }
 
+// WithMsgf 格式化覆盖默认消息
+func WithMsgf(format string, args ...any) Option {
+	return func(e *Error) {
+		e.msg = fmt.Sprintf(format, args...)
+	}
+}
+
 // New 创建应用错误
 func New(code Code, opts ...Option) *Error {
 	e := &Error{code: code}
@@ -93,6 +100,6 @@ func New(code Code, opts ...Option) *Error {
 }
 
 // Wrap 快捷包装已有错误
-func Wrap(code Code, cause error) *Error {
-	return New(code, WithCause(cause))
+func Wrap(code Code, cause error, opts ...Option) *Error {
+	return New(code, append([]Option{WithCause(cause)}, opts...)...)
 }

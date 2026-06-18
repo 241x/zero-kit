@@ -2,17 +2,17 @@ package apperror
 
 // Code 应用错误码
 type Code struct {
-	value    int
-	name     string
-	template string
+	value      int
+	name       string
+	defaultMsg string
 }
 
 // NewCode 创建错误码
-func NewCode(value int, name, template string) Code {
+func NewCode(value int, name, defaultMsg string) Code {
 	return Code{
-		value:    value,
-		name:     name,
-		template: template,
+		value:      value,
+		name:       name,
+		defaultMsg: defaultMsg,
 	}
 }
 
@@ -26,7 +26,7 @@ func (c Code) String() string {
 	return c.name
 }
 
-// Template 返回消息模板
-func (c Code) Template() string {
-	return c.template
+// DefaultMsg 返回默认消息
+func (c Code) DefaultMsg() string {
+	return c.defaultMsg
 }
