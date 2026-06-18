@@ -1,32 +1,32 @@
-package mysql
+package gormutil
 
 import (
 	"context"
 	"errors"
 	"time"
 
-	logger2 "github.com/241x/zero-kit/logger"
+	"github.com/241x/zero-kit/logger"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // Logger 自定义GORM logger实现
 type Logger struct {
-	logger2.Logger
-	LogLevel logger.LogLevel
+	logger.Logger
+	LogLevel gormlogger.LogLevel
 }
 
 // NewLogger 创建新的Logger实例
-func NewLogger(l logger2.Logger) *Logger {
+func NewLogger(l logger.Logger) *Logger {
 	return &Logger{
 		Logger:   l,
-		LogLevel: logger.Info,
+		LogLevel: gormlogger.Info,
 	}
 }
 
 // LogMode 设置日志级别
-func (l *Logger) LogMode(level logger.LogLevel) logger.Interface {
+func (l *Logger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 	newLogger := *l
 	newLogger.LogLevel = level
 	return &newLogger
@@ -34,28 +34,28 @@ func (l *Logger) LogMode(level logger.LogLevel) logger.Interface {
 
 // Info 打印info级别日志
 func (l *Logger) Info(ctx context.Context, msg string, data ...any) {
-	if l.LogLevel >= logger.Info {
+	if l.LogLevel >= gormlogger.Info {
 		l.Logger.Info(msg, append([]any{"traceId", TraceID(ctx)}, data...)...)
 	}
 }
 
 // Warn 打印warn级别日志
 func (l *Logger) Warn(ctx context.Context, msg string, data ...any) {
-	if l.LogLevel >= logger.Warn {
+	if l.LogLevel >= gormlogger.Warn {
 		l.Logger.Warn(msg, append([]any{"traceId", TraceID(ctx)}, data...)...)
 	}
 }
 
 // Error 打印error级别日志
 func (l *Logger) Error(ctx context.Context, msg string, data ...any) {
-	if l.LogLevel >= logger.Error {
+	if l.LogLevel >= gormlogger.Error {
 		l.Logger.Error(msg, append([]any{"traceId", TraceID(ctx)}, data...)...)
 	}
 }
 
 // Trace 打印SQL日志
 func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
-	if l.LogLevel <= logger.Silent {
+	if l.LogLevel <= gormlogger.Silent {
 		return
 	}
 
@@ -69,13 +69,13 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, 
 	}
 
 	switch {
-	case err != nil && l.LogLevel >= logger.Error:
+	case err != nil && l.LogLevel >= gormlogger.Error:
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			l.Logger.Error("SQL执行错误", append(fields, "error", err)...)
 		}
-	case elapsed > time.Second && l.LogLevel >= logger.Warn:
+	case elapsed > time.Second && l.LogLevel >= gormlogger.Warn:
 		l.Logger.Warn("慢SQL查询", append(fields, "threshold", "1s")...)
-	case l.LogLevel == logger.Info:
+	case l.LogLevel == gormlogger.Info:
 		l.Logger.Debug("SQL执行", fields...)
 	}
 }

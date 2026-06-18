@@ -9,7 +9,6 @@ import (
 // 错误定义
 var (
 	ErrLockAcquired = errors.New("lock is already acquired")
-	ErrLockNotHeld  = errors.New("lock is not held")
 	ErrInvalidToken = errors.New("invalid token")
 )
 
@@ -48,12 +47,6 @@ func WithWatchDog() LockOption {
 type Locker interface {
 	// Lock 获取锁，返回锁对象和错误
 	Lock(ctx context.Context, key string, opts ...LockOption) (Lock, error)
-
-	// Unlock 释放锁（根据 key）
-	Unlock(ctx context.Context, key string) error
-
-	// Extend 延长锁的过期时间
-	Extend(ctx context.Context, key string, ttl time.Duration) error
 }
 
 // Lock 单个锁实例接口

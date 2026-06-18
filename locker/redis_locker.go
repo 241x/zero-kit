@@ -106,28 +106,6 @@ func (l *RedisLocker) tryLock(ctx context.Context, key, token string, ttl time.D
 	}, nil
 }
 
-// Unlock 释放锁（根据 key）
-// 注意：这种方式不安全，因为无法验证 token
-// 建议使用 Lock 接口返回的 Lock 实例来释放
-func (l *RedisLocker) Unlock(ctx context.Context, key string) error {
-	return l.client.Del(ctx, l.getKey(key)).Err()
-}
-
-// Extend 延长锁的过期时间
-// 注意：这种方式不安全，因为无法验证 token
-// 建议使用 Lock 接口返回的 Lock 实例来延长
-func (l *RedisLocker) Extend(ctx context.Context, key string, ttl time.Duration) error {
-	fullKey := l.getKey(key)
-	exists, err := l.client.Exists(ctx, fullKey).Result()
-	if err != nil {
-		return err
-	}
-	if exists == 0 {
-		return ErrLockNotHeld
-	}
-	return l.client.Expire(ctx, fullKey, ttl).Err()
-}
-
 // unlockWithToken 使用令牌释放锁（安全释放）
 func (l *redisLock) unlockWithToken(ctx context.Context, token string) error {
 	// Lua 脚本：只有 key 对应的值等于 token 才删除
