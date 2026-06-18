@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"errors"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -19,7 +20,13 @@ func HashPassword(password string) (string, error) {
 }
 
 // CheckPassword 密码校验
-func CheckPassword(password, hash string) bool {
+func CheckPassword(password, hash string) (bool, error) {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+		return false, nil
+	}
+	return false, err
 }
