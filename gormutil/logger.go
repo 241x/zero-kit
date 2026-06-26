@@ -25,6 +25,14 @@ func NewLogger(l logger.Logger) *Logger {
 	}
 }
 
+// buildTraceField 构建traceId字段，空字符串时省略
+func buildTraceField(ctx context.Context) []any {
+	if traceID := TraceID(ctx); traceID != "" {
+		return []any{"traceId", traceID}
+	}
+	return nil
+}
+
 // LogMode 设置日志级别
 func (l *Logger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 	newLogger := *l
@@ -35,21 +43,21 @@ func (l *Logger) LogMode(level gormlogger.LogLevel) gormlogger.Interface {
 // Info 打印info级别日志
 func (l *Logger) Info(ctx context.Context, msg string, data ...any) {
 	if l.LogLevel >= gormlogger.Info {
-		l.Logger.Info(msg, append([]any{"traceId", TraceID(ctx)}, data...)...)
+		l.Logger.Info(msg, append(buildTraceField(ctx), data...)...)
 	}
 }
 
 // Warn 打印warn级别日志
 func (l *Logger) Warn(ctx context.Context, msg string, data ...any) {
 	if l.LogLevel >= gormlogger.Warn {
-		l.Logger.Warn(msg, append([]any{"traceId", TraceID(ctx)}, data...)...)
+		l.Logger.Warn(msg, append(buildTraceField(ctx), data...)...)
 	}
 }
 
 // Error 打印error级别日志
 func (l *Logger) Error(ctx context.Context, msg string, data ...any) {
 	if l.LogLevel >= gormlogger.Error {
-		l.Logger.Error(msg, append([]any{"traceId", TraceID(ctx)}, data...)...)
+		l.Logger.Error(msg, append(buildTraceField(ctx), data...)...)
 	}
 }
 
@@ -61,12 +69,11 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, 
 
 	elapsed := time.Since(begin)
 	sql, rows := fc()
-	fields := []any{
-		"traceId", TraceID(ctx),
+	fields := append(buildTraceField(ctx),
 		"sql", sql,
 		"rows", rows,
-		"timeMs", float64(elapsed.Nanoseconds()) / 1e6,
-	}
+		"timeMs", float64(elapsed.Nanoseconds())/1e6,
+	)
 
 	switch {
 	case err != nil && l.LogLevel >= gormlogger.Error:
