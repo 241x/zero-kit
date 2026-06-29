@@ -30,6 +30,7 @@ type peer struct {
 	broker         *Broker
 	logger         logger.Logger
 	maxMessageSize int
+	closed         bool
 }
 
 // newPeer 创建一个新的连接
@@ -89,6 +90,12 @@ func (p *peer) SetMetadata(key string, value any) {
 
 // Send 发送消息
 func (p *peer) Send(msg *Message) error {
+	p.mu.RLock()
+	closed := p.closed
+	p.mu.RUnlock()
+	if closed {
+		return ErrPeerClosed
+	}
 	select {
 	case p.sendCh <- msg:
 		return nil
@@ -164,5 +171,12 @@ func (p *peer) writeLoop(ctx context.Context) {
 
 // shutdown 关闭连接
 func (p *peer) shutdown() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
 	close(p.sendCh)
+	p.mu.Unlock()
 }

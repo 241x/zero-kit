@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	defaultWriteWait  = 10 * time.Second
-	defaultPingPeriod = 54 * time.Second
-	defaultPongWait   = 60 * time.Second
+	defaultWriteWait      = 10 * time.Second
+	defaultPingPeriod     = 54 * time.Second
+	defaultPongWait       = 60 * time.Second
+	defaultMaxMessageSize = 10 * 1024 * 1024
 )
 
 // Upgrader 升级 HTTP 连接为 WebSocket 连接
@@ -24,17 +25,19 @@ var Upgrader = websocket.Upgrader{
 
 // Config 配置
 type Config struct {
-	WriteWait  time.Duration
-	PingPeriod time.Duration
-	PongWait   time.Duration
+	WriteWait      time.Duration
+	PingPeriod     time.Duration
+	PongWait       time.Duration
+	MaxMessageSize int64
 }
 
 // defaultConfig 默认配置
 func defaultConfig() Config {
 	return Config{
-		WriteWait:  defaultWriteWait,
-		PingPeriod: defaultPingPeriod,
-		PongWait:   defaultPongWait,
+		WriteWait:      defaultWriteWait,
+		PingPeriod:     defaultPingPeriod,
+		PongWait:       defaultPongWait,
+		MaxMessageSize: defaultMaxMessageSize,
 	}
 }
 
@@ -61,9 +64,12 @@ func New(conn *websocket.Conn, cfgs ...Config) *Transport {
 		if cfgs[0].PongWait > 0 {
 			cfg.PongWait = cfgs[0].PongWait
 		}
+		if cfgs[0].MaxMessageSize > 0 {
+			cfg.MaxMessageSize = cfgs[0].MaxMessageSize
+		}
 	}
 
-	conn.SetReadLimit(10240)
+	conn.SetReadLimit(cfg.MaxMessageSize)
 	conn.SetReadDeadline(time.Now().Add(cfg.PongWait))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(cfg.PongWait))

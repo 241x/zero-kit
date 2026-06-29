@@ -17,4 +17,7 @@ var (
 
 	// ErrInvalidPeer 无效的连接
 	ErrInvalidPeer = errors.New("invalid peer: not created by this broker")
+
+	// ErrPeerClosed 连接已关闭
+	ErrPeerClosed = errors.New("peer is closed")
 )
