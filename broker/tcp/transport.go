@@ -1,0 +1,58 @@
+package tcp
+
+import (
+	"encoding/binary"
+	"io"
+	"net"
+)
+
+const defaultMaxMessageSize = 10 * 1024 * 1024
+
+// Transport TCP 传输
+type Transport struct {
+	conn           net.Conn
+	maxMessageSize int
+}
+
+// NewTransport 创建一个新的 TCP 传输
+func NewTransport(conn net.Conn, maxMessageSize ...int) *Transport {
+	size := defaultMaxMessageSize
+	if len(maxMessageSize) > 0 && maxMessageSize[0] > 0 {
+		size = maxMessageSize[0]
+	}
+	return &Transport{conn: conn, maxMessageSize: size}
+}
+
+// ReadMessage 读取消息
+func (t *Transport) ReadMessage() ([]byte, error) {
+	var length uint32
+	if err := binary.Read(t.conn, binary.BigEndian, &length); err != nil {
+		return nil, err
+	}
+	if length > uint32(t.maxMessageSize) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	data := make([]byte, length)
+	_, err := io.ReadFull(t.conn, data)
+	return data, err
+}
+
+// WriteMessage 写入消息
+
+func (t *Transport) WriteMessage(data []byte) error {
+	if err := binary.Write(t.conn, binary.BigEndian, uint32(len(data))); err != nil {
+		return err
+	}
+	_, err := t.conn.Write(data)
+	return err
+}
+
+// Close 关闭连接
+func (t *Transport) Close() error {
+	return t.conn.Close()
+}
+
+// RemoteAddr 获取远程地址
+func (t *Transport) RemoteAddr() string {
+	return t.conn.RemoteAddr().String()
+}
