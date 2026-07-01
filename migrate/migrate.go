@@ -53,9 +53,9 @@ type ScriptReader interface {
 // ProgressStore 进度存储接口
 type ProgressStore interface {
 	// Load 加载上次迁移断点
-	Load() (int, error)
+	Load(ctx context.Context) (int, error)
 	// Save 保存当前迁移进度
-	Save(lineNum int) error
+	Save(ctx context.Context, lineNum int) error
 }
 
 // FileScriptReader 文件脚本读取器
@@ -106,9 +106,9 @@ func NewDBProgressStore(db *gorm.DB, scriptPath string) *DBProgressStore {
 }
 
 // Load 从数据库加载上次迁移断点
-func (s *DBProgressStore) Load() (int, error) {
+func (s *DBProgressStore) Load(ctx context.Context) (int, error) {
 	var progress MigrationProgress
-	err := s.db.Where("script_path = ?", s.scriptPath).Order("id DESC").First(&progress).Error
+	err := s.db.WithContext(ctx).Where("script_path = ?", s.scriptPath).Order("id DESC").First(&progress).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return 0, nil
@@ -119,14 +119,14 @@ func (s *DBProgressStore) Load() (int, error) {
 }
 
 // Save 保存当前迁移进度到数据库
-func (s *DBProgressStore) Save(lineNum int) error {
+func (s *DBProgressStore) Save(ctx context.Context, lineNum int) error {
 	progress := MigrationProgress{
 		ScriptPath: s.scriptPath,
 		LineNum:    lineNum,
 		UpdatedAt:  time.Now(),
 	}
 
-	err := s.db.Create(&progress).Error
+	err := s.db.WithContext(ctx).Create(&progress).Error
 	if err != nil {
 		return wrapError("db.Create", err)
 	}
@@ -142,7 +142,7 @@ func NewFileProgressStore(path string) *FileProgressStore {
 }
 
 // Load 加载上次迁移断点
-func (s *FileProgressStore) Load() (int, error) {
+func (s *FileProgressStore) Load(_ context.Context) (int, error) {
 	file, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -187,7 +187,7 @@ func (s *FileProgressStore) Load() (int, error) {
 }
 
 // Save 保存当前迁移进度
-func (s *FileProgressStore) Save(lineNum int) error {
+func (s *FileProgressStore) Save(_ context.Context, lineNum int) error {
 	file, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return wrapError("os.OpenFile", err)
@@ -266,7 +266,7 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 		return wrapError("AutoMigrate", err)
 	}
 
-	statements, err := m.parseSQLStatements()
+	statements, err := m.parseSQLStatements(ctx)
 	if err != nil {
 		return wrapError("parseSQLStatements", err)
 	}
@@ -285,7 +285,7 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 			}
 		}
 
-		if err := m.progressStore.Save(stmt.LineNum); err != nil {
+		if err := m.progressStore.Save(ctx, stmt.LineNum); err != nil {
 			return wrapError("recordProgress", err)
 		}
 	}
@@ -294,8 +294,8 @@ func (m *Migrator) Migrate(ctx context.Context) error {
 }
 
 // parseSQLStatements 解析 SQL 文件并提取语句
-func (m *Migrator) parseSQLStatements() ([]SQLStatement, error) {
-	lastLine, err := m.progressStore.Load()
+func (m *Migrator) parseSQLStatements(ctx context.Context) ([]SQLStatement, error) {
+	lastLine, err := m.progressStore.Load(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -37,7 +37,7 @@ type mockProgressStore struct {
 	records  []int
 }
 
-func (m *mockProgressStore) Load() (int, error) {
+func (m *mockProgressStore) Load(_ context.Context) (int, error) {
 	if m.loadErr != nil {
 		return 0, m.loadErr
 	}
@@ -46,7 +46,7 @@ func (m *mockProgressStore) Load() (int, error) {
 	return m.lastLine, nil
 }
 
-func (m *mockProgressStore) Save(lineNum int) error {
+func (m *mockProgressStore) Save(_ context.Context, lineNum int) error {
 	if m.saveErr != nil {
 		return m.saveErr
 	}
@@ -356,7 +356,7 @@ func setupDBProgressStore(t *testing.T) (*gorm.DB, *migrate.DBProgressStore) {
 // TestDBProgressStore_LoadEmpty 测试首次 Load 返回 0
 func TestDBProgressStore_LoadEmpty(t *testing.T) {
 	_, store := setupDBProgressStore(t)
-	lineNum, err := store.Load()
+	lineNum, err := store.Load(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, 0, lineNum)
 }
@@ -365,10 +365,10 @@ func TestDBProgressStore_LoadEmpty(t *testing.T) {
 func TestDBProgressStore_SaveAndLoad(t *testing.T) {
 	_, store := setupDBProgressStore(t)
 
-	err := store.Save(42)
+	err := store.Save(context.Background(), 42)
 	assert.NoError(t, err)
 
-	lineNum, err := store.Load()
+	lineNum, err := store.Load(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, 42, lineNum)
 }
@@ -378,11 +378,11 @@ func TestDBProgressStore_MultipleSaves(t *testing.T) {
 	_, store := setupDBProgressStore(t)
 
 	for _, line := range []int{10, 20, 35, 50} {
-		err := store.Save(line)
+		err := store.Save(context.Background(), line)
 		assert.NoError(t, err)
 	}
 
-	lineNum, err := store.Load()
+	lineNum, err := store.Load(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, 50, lineNum)
 }
@@ -396,14 +396,14 @@ func TestDBProgressStore_DifferentScripts(t *testing.T) {
 	storeA := migrate.NewDBProgressStore(db, "script_a.sql")
 	storeB := migrate.NewDBProgressStore(db, "script_b.sql")
 
-	assert.NoError(t, storeA.Save(100))
-	assert.NoError(t, storeB.Save(200))
+	assert.NoError(t, storeA.Save(context.Background(), 100))
+	assert.NoError(t, storeB.Save(context.Background(), 200))
 
-	lineA, err := storeA.Load()
+	lineA, err := storeA.Load(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, 100, lineA)
 
-	lineB, err := storeB.Load()
+	lineB, err := storeB.Load(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, 200, lineB)
 }
@@ -414,7 +414,7 @@ func TestDBProgressStore_SaveHistory(t *testing.T) {
 
 	lines := []int{10, 20, 35, 50}
 	for _, line := range lines {
-		err := store.Save(line)
+		err := store.Save(context.Background(), line)
 		assert.NoError(t, err)
 	}
 
@@ -425,7 +425,7 @@ func TestDBProgressStore_SaveHistory(t *testing.T) {
 	assert.Equal(t, int64(len(lines)), count)
 
 	// 验证 Load 返回最新一条
-	lineNum, err := store.Load()
+	lineNum, err := store.Load(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, 50, lineNum)
 }
