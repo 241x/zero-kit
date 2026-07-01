@@ -109,8 +109,6 @@ func NewDBProgressStore(db *gorm.DB, scriptPath string) *DBProgressStore {
 func (s *DBProgressStore) Load(ctx context.Context) (int, error) {
 	var progress MigrationProgress
 	err := s.db.WithContext(ctx).Where("script_path = ?", s.scriptPath).Order("id DESC").First(&progress).Error
-	fmt.Println("Error:", err)
-	os.Exit(1)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return 0, nil
