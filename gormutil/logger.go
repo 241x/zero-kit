@@ -77,12 +77,14 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, 
 
 	switch {
 	case err != nil && l.LogLevel >= gormlogger.Error:
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			l.Logger.Error("SQL执行错误", append(fields, "error", err)...)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			l.Logger.Warn("RecordNotFound", fields...)
+		} else {
+			l.Logger.Error("ExecuteError", append(fields, "error", err)...)
 		}
 	case elapsed > time.Second && l.LogLevel >= gormlogger.Warn:
-		l.Logger.Warn("慢SQL查询", append(fields, "threshold", "1s")...)
+		l.Logger.Warn("SlowQuery", append(fields, "threshold", "1s")...)
 	case l.LogLevel == gormlogger.Info:
-		l.Logger.Debug("SQL执行", fields...)
+		l.Logger.Debug("Execute", fields...)
 	}
 }
