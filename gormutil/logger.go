@@ -78,13 +78,13 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, 
 	switch {
 	case err != nil && l.LogLevel >= gormlogger.Error:
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			l.Logger.Warn("RecordNotFound", fields...)
+			l.Logger.Debug("QueryNotFound", fields...)
 		} else {
-			l.Logger.Error("ExecuteError", append(fields, "error", err)...)
+			l.Logger.Error("QueryError", append(fields, "error", err)...)
 		}
 	case elapsed > time.Second && l.LogLevel >= gormlogger.Warn:
-		l.Logger.Warn("SlowQuery", append(fields, "threshold", "1s")...)
+		l.Logger.Warn("QuerySlow", append(fields, "threshold", "1s")...)
 	case l.LogLevel == gormlogger.Info:
-		l.Logger.Debug("Execute", fields...)
+		l.Logger.Debug("QueryExecuted", fields...)
 	}
 }
