@@ -27,3 +27,12 @@ func NewTrans(v *validator.Validate) (ut.Translator, error) {
 	}
 	return trans, nil
 }
+
+// MustNewTrans 创建中文翻译器，注册默认翻译规则，如果失败则 panic。
+func MustNewTrans(v *validator.Validate) ut.Translator {
+	trans, err := NewTrans(v)
+	if err != nil {
+		panic(err)
+	}
+	return trans
+}

@@ -35,3 +35,12 @@ func NewDB(cfg Config, logger logger.Interface) (*gorm.DB, error) {
 
 	return db, nil
 }
+
+// MustNewDB 获取数据库连接，如果失败则 panic。
+func MustNewDB(cfg Config, logger logger.Interface) *gorm.DB {
+	db, err := NewDB(cfg, logger)
+	if err != nil {
+		panic(err)
+	}
+	return db
+}

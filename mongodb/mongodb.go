@@ -45,3 +45,12 @@ func NewConn(cfg Config) (*Conn, error) {
 		DB:     client.Database(cfg.Database),
 	}, nil
 }
+
+// MustNewConn 创建 MongoDB 连接，如果失败则 panic。
+func MustNewConn(cfg Config) *Conn {
+	conn, err := NewConn(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return conn
+}
