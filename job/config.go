@@ -26,8 +26,10 @@ type Config struct {
 	RetryDelay        time.Duration // 重试退避基础延迟
 	RetryMaxDelay     time.Duration // 重试退避最大延迟
 	RetryStrategy     RetryStrategy // 重试退避策略
+	RetryJitter       bool          // 重试延迟加入随机抖动（默认开启，避免惊群）
 	Retention         time.Duration // 终态作业保留时长（0 表示永久保留，不自动清理）
 	CleanupInterval   time.Duration // 终态作业清理间隔（Retention > 0 时生效）
+	ShutdownTimeout   time.Duration // 优雅停止等待处理器退出的超时（0 使用默认 30s）
 }
 
 // DefaultConfig 返回默认配置
@@ -42,8 +44,10 @@ func DefaultConfig() Config {
 		RetryDelay:        5 * time.Second,
 		RetryMaxDelay:     time.Hour,
 		RetryStrategy:     RetryStrategyExponential,
+		RetryJitter:       true,
 		Retention:         0,
 		CleanupInterval:   time.Minute,
+		ShutdownTimeout:   30 * time.Second,
 	}
 }
 
@@ -101,6 +105,12 @@ func (c Config) WithRetryStrategy(strategy RetryStrategy) Config {
 	return c
 }
 
+// WithRetryJitter 设置重试延迟是否加入随机抖动（默认开启，避免惊群）
+func (c Config) WithRetryJitter(jitter bool) Config {
+	c.RetryJitter = jitter
+	return c
+}
+
 // WithRetention 设置终态作业保留时长（0 表示永久保留）
 func (c Config) WithRetention(d time.Duration) Config {
 	c.Retention = d
@@ -110,6 +120,12 @@ func (c Config) WithRetention(d time.Duration) Config {
 // WithCleanupInterval 设置终态作业清理间隔
 func (c Config) WithCleanupInterval(interval time.Duration) Config {
 	c.CleanupInterval = interval
+	return c
+}
+
+// WithShutdownTimeout 设置优雅停止等待处理器退出的超时（0 使用默认 30s）
+func (c Config) WithShutdownTimeout(timeout time.Duration) Config {
+	c.ShutdownTimeout = timeout
 	return c
 }
 
@@ -136,6 +152,9 @@ func (c Config) Validate() error {
 	}
 	if c.Retention > 0 && c.CleanupInterval <= 0 {
 		return errors.New("job: cleanup interval must be greater than 0 when retention is set")
+	}
+	if c.ShutdownTimeout < 0 {
+		return errors.New("job: shutdown timeout must not be negative")
 	}
 	return nil
 }

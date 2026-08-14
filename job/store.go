@@ -79,11 +79,11 @@ type Failure struct {
 	Errors []AttemptError // 完整错误历史
 }
 
-// Stats 队列统计信息
+// Stats 队列统计信息（各状态当前存在的作业数）
 type Stats struct {
 	Pending   int64 `json:"pending"`   // 等待执行数（含延迟/重试等待）
 	Running   int64 `json:"running"`   // 执行中数
-	Success   int64 `json:"success"`   // 成功累计数
-	Failed    int64 `json:"failed"`    // 失败累计数
-	Cancelled int64 `json:"cancelled"` // 取消累计数
+	Success   int64 `json:"success"`   // 成功状态数
+	Failed    int64 `json:"failed"`    // 失败状态数
+	Cancelled int64 `json:"cancelled"` // 取消状态数
 }

@@ -6,6 +6,13 @@
 //
 // 重要语义：作业采用「至少一次执行」投递，即作业可能被重复执行，
 // 处理器（Handler）必须实现幂等或显式容忍重复。
+//
+// 存储仅支持 MySQL 5.7+：PopPending 使用「无锁 SELECT + 原子 UPDATE 抢占」
+// （UPDATE 携带 status/attempts 条件 + RowsAffected 判定），锁等待/死锁自动重试；
+// 数据库与连接需使用 utf8mb4 字符集（避免中文/emoji 乱码）。
+// Payload/Result 存储在 MySQL JSON 列中，写入时校验 JSON 合法性，
+// 提交作业时应传入合法 JSON（如 []byte(`{"key":"value"}`)），
+// 便于在数据库中通过 JSON_EXTRACT 等函数查询任务内容。
 package job
 
 import (
@@ -58,10 +65,10 @@ type Job struct {
 	ID          string            `json:"id"`           // 作业ID
 	Queue       string            `json:"queue"`        // 队列名
 	Type        string            `json:"type"`         // 作业类型
-	Payload     []byte            `json:"payload"`      // 作业输入数据
+	Payload     []byte            `json:"payload"`      // 作业输入数据（JSON）
 	Status      Status            `json:"status"`       // 作业状态
 	Progress    int               `json:"progress"`     // 执行进度（0-100）
-	Result      []byte            `json:"result"`       // 作业输出数据
+	Result      []byte            `json:"result"`       // 作业输出数据（JSON）
 	Error       string            `json:"error"`        // 最近一次错误信息
 	Attempts    int               `json:"attempts"`     // 已执行次数（1-based，首次执行为 1）
 	MaxAttempts int               `json:"max_attempts"` // 最大执行次数（默认 1，即不重试）

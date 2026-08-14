@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -13,6 +14,9 @@ import (
 
 // ErrExecutorRunning 执行器已启动
 var ErrExecutorRunning = errors.New("job: executor is already running")
+
+// ErrStopTimeout 执行器停止超时，仍有处理器未退出
+var ErrStopTimeout = errors.New("job: executor stop timed out")
 
 // Executor 消费 pending 作业并执行，负责心跳保活、进度上报、失败重试与失联恢复。
 type Executor struct {
@@ -82,7 +86,9 @@ func (e *Executor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop 优雅停止执行器，取消正在执行的作业并等待退出
+// Stop 优雅停止执行器，取消正在执行的作业并等待退出。
+// 若处理器未在 ShutdownTimeout 内响应取消，则强制返回 ErrStopTimeout，
+// 残留的 running 作业将由下次启动的失联恢复接管。
 func (e *Executor) Stop() error {
 	e.mu.Lock()
 	if !e.running {
@@ -93,7 +99,28 @@ func (e *Executor) Stop() error {
 	e.mu.Unlock()
 
 	// 不在持锁状态下等待，避免阻塞 IsRunning/Start
-	e.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	timeout := e.config.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		e.logger.Warn("executor stop timed out, some handlers still running")
+		e.mu.Lock()
+		e.running = false
+		e.mu.Unlock()
+		return ErrStopTimeout
+	}
 
 	e.mu.Lock()
 	e.running = false
@@ -142,10 +169,12 @@ func (e *Executor) execute(job *Job) {
 	log.Info("job started", "attempt", job.Attempts)
 
 	ctx, cancel := context.WithCancel(e.ctx)
-	if e.config.JobTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, e.config.JobTimeout)
-	}
 	defer cancel()
+	if e.config.JobTimeout > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, e.config.JobTimeout)
+		defer timeoutCancel()
+	}
 
 	// 进度上报：handler 通过 ReportProgress 直接落库
 	ctx = withProgress(ctx, func(p int) {
@@ -172,7 +201,7 @@ func (e *Executor) execute(job *Job) {
 				}
 				if !running {
 					// 作业已被取消或状态异常，终止执行
-					log.Warn("job is no longer running, aborting", "job_id", job.ID)
+					log.Warn("job is no longer running, aborting")
 					cancel()
 					return
 				}
@@ -187,9 +216,9 @@ func (e *Executor) execute(job *Job) {
 
 	// 写入终态（使用执行器 ctx，独立于 handler 超时，同时保证 Stop 可快速返回）
 	if err == nil {
-		log.Info("job completed", "job_id", job.ID)
+		log.Info("job completed")
 		if completeErr := e.store.Complete(e.ctx, job.Queue, job.ID, job.Result); completeErr != nil {
-			log.Error("mark job completed error", "job_id", job.ID, "error", completeErr)
+			log.Error("mark job completed error", "error", completeErr)
 		}
 		return
 	}
@@ -206,17 +235,17 @@ func (e *Executor) execute(job *Job) {
 
 	// 超过最大执行次数则最终失败，否则进入待重试
 	if job.Attempts >= job.MaxAttempts {
-		log.Err(err, "job failed permanently", "job_id", job.ID, "attempts", job.Attempts)
+		log.Err(err, "job failed permanently", "attempts", job.Attempts)
 		if failErr := e.store.Fail(e.ctx, job.Queue, job.ID, failure); failErr != nil {
-			log.Error("mark job failed error", "job_id", job.ID, "error", failErr)
+			log.Error("mark job failed error", "error", failErr)
 		}
 		return
 	}
 
-	retryAt := time.Now().Add(e.retryDelay(job.Attempts))
-	log.Warn("job failed, scheduling retry", "job_id", job.ID, "attempts", job.Attempts, "scheduled_at", retryAt)
+	retryAt := time.Now().Add(e.retryDelayJittered(job.Attempts))
+	log.Warn("job failed, scheduling retry", "attempts", job.Attempts, "scheduled_at", retryAt)
 	if retryErr := e.store.Retry(e.ctx, job.Queue, job.ID, retryAt, failure); retryErr != nil {
-		log.Error("schedule job retry error", "job_id", job.ID, "error", retryErr)
+		log.Error("schedule job retry error", "error", retryErr)
 	}
 }
 
@@ -225,7 +254,7 @@ func (e *Executor) runHandler(ctx context.Context, job *Job, log logger.Logger) 
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("handler panic: %v\n%s", r, trimStack(debug.Stack()))
-			log.Error("handler panicked", "job_id", job.ID, "panic", r)
+			log.Error("handler panicked", "panic", r)
 		}
 	}()
 	return e.handler.Execute(ctx, job)
@@ -330,6 +359,16 @@ func (e *Executor) retryDelay(attempt int) time.Duration {
 		return max
 	}
 	return delay
+}
+
+// retryDelayJittered 在基础退避延迟上叠加随机抖动（full jitter，范围为 [0, delay)），
+// 用于打散批量失败任务的重试时间，避免惊群；RetryJitter 关闭或延迟为 0 时返回原值。
+func (e *Executor) retryDelayJittered(attempt int) time.Duration {
+	delay := e.retryDelay(attempt)
+	if !e.config.RetryJitter || delay <= 0 {
+		return delay
+	}
+	return time.Duration(rand.Int64N(int64(delay)))
 }
 
 // sleep 在可取消情况下等待指定时长

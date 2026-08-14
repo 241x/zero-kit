@@ -72,3 +72,37 @@ func TestExecutor_retryDelayZeroBase(t *testing.T) {
 		t.Errorf("got %v, want 0", got)
 	}
 }
+
+func TestExecutor_retryDelayJittered(t *testing.T) {
+	e := &Executor{config: Config{
+		RetryStrategy: RetryStrategyFixed,
+		RetryDelay:    10 * time.Second,
+		RetryJitter:   true,
+	}}
+
+	// 抖动结果在 [0, delay) 范围内且有波动
+	seen := make(map[time.Duration]struct{})
+	for range 200 {
+		d := e.retryDelayJittered(1)
+		if d < 0 || d >= 10*time.Second {
+			t.Fatalf("jittered delay %v out of range [0, 10s)", d)
+		}
+		seen[d] = struct{}{}
+	}
+	if len(seen) < 2 {
+		t.Fatalf("jittered delay did not vary, got only %v", seen)
+	}
+
+	// 关闭抖动时返回精确延迟
+	e.config.RetryJitter = false
+	if got := e.retryDelayJittered(1); got != 10*time.Second {
+		t.Fatalf("got %v, want 10s", got)
+	}
+
+	// 基础延迟为 0 时抖动仍返回 0
+	e.config.RetryJitter = true
+	e.config.RetryDelay = 0
+	if got := e.retryDelayJittered(1); got != 0 {
+		t.Fatalf("got %v, want 0", got)
+	}
+}

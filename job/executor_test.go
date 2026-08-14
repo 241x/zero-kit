@@ -2,34 +2,30 @@ package job_test
 
 import (
 	"context"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/241x/zero-kit/job"
 
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
-// setupTestExecutor 创建基于 SQLite 的执行器及存储，返回执行器和清理函数。
+// setupTestExecutor 创建基于 MySQL 的执行器及存储，未配置 DSN 时跳过。
 func setupTestExecutor(t *testing.T, config job.Config, handler job.Handler) (*job.Executor, *job.SQLStore, func()) {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test.db")), &gorm.Config{})
-	require.NoError(t, err)
+	db := openTestDB(t)
+	table := uniqueTableName()
 
-	store, err := job.NewSQLStore(db)
+	store, err := job.NewSQLStore(db, job.WithTableName(table))
 	require.NoError(t, err)
 	executor := job.NewExecutor(store, handler, config)
 
 	cleanup := func() {
 		executor.Stop()
-		sqlDB, _ := db.DB()
-		sqlDB.Close()
+		dropTestTable(t, db, table)
 	}
 
 	return executor, store, cleanup
@@ -45,14 +41,14 @@ func fastRetryConfig() job.Config {
 
 func TestExecutor_ExecuteSuccess(t *testing.T) {
 	executor, store, cleanup := setupTestExecutor(t, defaultTestConfig(), job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
-		j.Result = []byte("done")
+		j.Result = []byte("\"done\"")
 		return nil
 	}))
 	defer cleanup()
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -62,7 +58,7 @@ func TestExecutor_ExecuteSuccess(t *testing.T) {
 
 	got, err := store.Get(context.Background(), j.ID)
 	require.NoError(t, err)
-	assert.Equal(t, []byte("done"), got.Result)
+	assert.Equal(t, []byte("\"done\""), got.Result)
 	assert.Equal(t, 1, got.Attempts)
 }
 
@@ -74,7 +70,7 @@ func TestExecutor_ExecuteFailure(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -99,7 +95,7 @@ func TestExecutor_RetryThenSucceed(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload")).WithMaxAttempts(3)
+	j := job.NewJob("report", []byte("\"payload\"")).WithMaxAttempts(3)
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -121,7 +117,7 @@ func TestExecutor_RetryExhausted(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload")).WithMaxAttempts(2)
+	j := job.NewJob("report", []byte("\"payload\"")).WithMaxAttempts(2)
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -146,7 +142,7 @@ func TestExecutor_ProgressReporting(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -167,7 +163,7 @@ func TestExecutor_ScheduledJob(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload")).WithDelay(100 * time.Millisecond)
+	j := job.NewJob("report", []byte("\"payload\"")).WithDelay(100 * time.Millisecond)
 	require.NoError(t, store.Save(context.Background(), j))
 
 	// 未到期时仍处于 pending，不会被取出执行
@@ -193,7 +189,7 @@ func TestExecutor_CancelViaStop(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	<-started
@@ -209,7 +205,7 @@ func TestExecutor_HandlerPanic(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -242,7 +238,7 @@ func TestExecutor_JobTimeout(t *testing.T) {
 
 	require.NoError(t, executor.Start(context.Background()))
 
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	require.Eventually(t, func() bool {
@@ -260,7 +256,7 @@ func TestExecutor_StaleRecovery(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload")).WithMaxAttempts(2)
+	j := job.NewJob("report", []byte("\"payload\"")).WithMaxAttempts(2)
 	require.NoError(t, store.Save(ctx, j))
 
 	// 手动抢占为 running，模拟执行中进程崩溃（无后续心跳）
@@ -298,4 +294,28 @@ func TestExecutor_StartNilDependencies(t *testing.T) {
 
 	executor = job.NewExecutor(&job.SQLStore{}, nil, defaultTestConfig())
 	require.Error(t, executor.Start(context.Background()))
+}
+
+func TestExecutor_StopTimeout(t *testing.T) {
+	config := defaultTestConfig().WithShutdownTimeout(50 * time.Millisecond)
+	executor, store, cleanup := setupTestExecutor(t, config, job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		// 故意不响应取消，模拟阻塞处理器
+		time.Sleep(time.Minute)
+		return nil
+	}))
+	defer cleanup()
+
+	require.NoError(t, executor.Start(context.Background()))
+
+	j := job.NewJob("report", []byte("\"payload\""))
+	require.NoError(t, store.Save(context.Background(), j))
+
+	require.Eventually(t, func() bool {
+		got, err := store.Get(context.Background(), j.ID)
+		return err == nil && got.Status == job.StatusRunning
+	}, 3*time.Second, 20*time.Millisecond)
+
+	err := executor.Stop()
+	require.ErrorIs(t, err, job.ErrStopTimeout)
+	assert.False(t, executor.IsRunning())
 }

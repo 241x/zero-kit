@@ -2,31 +2,27 @@ package job_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/241x/zero-kit/job"
 
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
-// setupTestStore 创建基于 SQLite 的测试存储，返回存储实例和清理函数。
+// setupTestStore 创建基于 MySQL 的集成测试存储，未配置 DSN 时跳过。
 func setupTestStore(t *testing.T) (*job.SQLStore, func()) {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "test.db")), &gorm.Config{})
-	require.NoError(t, err)
+	db := openTestDB(t)
+	table := uniqueTableName()
 
-	store, err := job.NewSQLStore(db)
+	store, err := job.NewSQLStore(db, job.WithTableName(table))
 	require.NoError(t, err)
 
 	cleanup := func() {
-		sqlDB, _ := db.DB()
-		sqlDB.Close()
+		dropTestTable(t, db, table)
 	}
 	return store, cleanup
 }
@@ -39,14 +35,14 @@ func TestSQLStore_SaveGet(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	j := job.NewJob("report", []byte("hello"))
+	j := job.NewJob("report", []byte("\"hello\""))
 	require.NoError(t, store.Save(context.Background(), j))
 
 	got, err := store.Get(context.Background(), j.ID)
 	require.NoError(t, err)
 	assert.Equal(t, j.ID, got.ID)
 	assert.Equal(t, "report", got.Type)
-	assert.Equal(t, []byte("hello"), got.Payload)
+	assert.Equal(t, []byte("\"hello\""), got.Payload)
 	assert.Equal(t, job.StatusPending, got.Status)
 	assert.Equal(t, 1, got.MaxAttempts)
 }
@@ -73,13 +69,47 @@ func TestSQLStore_SaveEmptyType(t *testing.T) {
 	assert.ErrorIs(t, store.Save(context.Background(), job.NewJob("", nil)), job.ErrEmptyJobType)
 }
 
+func TestSQLStore_WithTableName(t *testing.T) {
+	db := openTestDB(t)
+	table := uniqueTableName()
+	defer dropTestTable(t, db, table)
+
+	store, err := job.NewSQLStore(db, job.WithTableName(table))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	j := job.NewJob("report", []byte("\"payload\""))
+	require.NoError(t, store.Save(ctx, j))
+
+	popped, err := store.PopPending(ctx, j.Queue)
+	require.NoError(t, err)
+	require.NotNil(t, popped)
+	assert.Equal(t, j.ID, popped.ID)
+
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, []byte("\"result\"")))
+
+	// 自定义表中可查询到作业，默认表未被创建
+	var rec struct {
+		ID     string
+		Status string
+	}
+	require.NoError(t, db.Table(table).Where("id = ?", j.ID).First(&rec).Error)
+	assert.Equal(t, string(job.StatusSuccess), rec.Status)
+
+	assert.False(t, db.Migrator().HasTable("jobs"))
+
+	got, err := store.Get(ctx, j.ID)
+	require.NoError(t, err)
+	assert.Equal(t, job.StatusSuccess, got.Status)
+}
+
 func TestSQLStore_PopPendingFIFO(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx := context.Background()
-	first := job.NewJob("report", []byte("first"))
-	second := job.NewJob("report", []byte("second"))
+	first := job.NewJob("report", []byte("\"first\""))
+	second := job.NewJob("report", []byte("\"second\""))
 	require.NoError(t, store.Save(ctx, first))
 	// 间隔足够让 UUIDv7 时间序字段产生差异
 	time.Sleep(10 * time.Millisecond)
@@ -107,7 +137,7 @@ func TestSQLStore_PopPendingAtomic(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	got1, err := store.PopPending(ctx, j.Queue)
@@ -124,18 +154,18 @@ func TestSQLStore_Complete(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
 
-	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, []byte("result")))
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, []byte("\"result\"")))
 
 	got, err := store.Get(ctx, j.ID)
 	require.NoError(t, err)
 	assert.Equal(t, job.StatusSuccess, got.Status)
-	assert.Equal(t, []byte("result"), got.Result)
+	assert.Equal(t, []byte("\"result\""), got.Result)
 	assert.NotZero(t, got.CompletedAt)
 }
 
@@ -144,7 +174,7 @@ func TestSQLStore_Fail(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	_, err := store.PopPending(ctx, j.Queue)
@@ -169,7 +199,7 @@ func TestSQLStore_CancelPending(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	require.NoError(t, store.Cancel(ctx, j.Queue, j.ID))
@@ -184,7 +214,7 @@ func TestSQLStore_Heartbeat(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -204,7 +234,7 @@ func TestSQLStore_HeartbeatNotRunning(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	running, err := store.Heartbeat(ctx, j.Queue, j.ID, 0)
@@ -217,7 +247,7 @@ func TestSQLStore_Retry(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload")).WithMaxAttempts(3)
+	j := job.NewJob("report", []byte("\"payload\"")).WithMaxAttempts(3)
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -237,7 +267,7 @@ func TestSQLStore_RetryBecomesPoppable(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload")).WithMaxAttempts(3)
+	j := job.NewJob("report", []byte("\"payload\"")).WithMaxAttempts(3)
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -261,7 +291,7 @@ func TestSQLStore_Scheduled(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload")).WithDelay(50 * time.Millisecond)
+	j := job.NewJob("report", []byte("\"payload\"")).WithDelay(50 * time.Millisecond)
 	require.NoError(t, store.Save(ctx, j))
 
 	got, err := store.Get(ctx, j.ID)
@@ -287,7 +317,7 @@ func TestSQLStore_Requeue(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload")).WithMaxAttempts(3)
+	j := job.NewJob("report", []byte("\"payload\"")).WithMaxAttempts(3)
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -304,7 +334,7 @@ func TestSQLStore_ListStaleRunning(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -324,7 +354,7 @@ func TestSQLStore_GetStats(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -342,7 +372,7 @@ func TestSQLStore_Delete(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	require.NoError(t, store.Delete(ctx, j.ID))
@@ -356,9 +386,9 @@ func TestSQLStore_List(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	report1 := job.NewJob("report", []byte("r1"))
-	report2 := job.NewJob("report", []byte("r2")).WithQueue("other")
-	email := job.NewJob("email", []byte("e1"))
+	report1 := job.NewJob("report", []byte("\"r1\""))
+	report2 := job.NewJob("report", []byte("\"r2\"")).WithQueue("other")
+	email := job.NewJob("email", []byte("\"e1\""))
 	require.NoError(t, store.Save(ctx, report1))
 	require.NoError(t, store.Save(ctx, report2))
 	require.NoError(t, store.Save(ctx, email))
@@ -382,7 +412,7 @@ func TestSQLStore_ListByStatus(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -403,7 +433,7 @@ func TestSQLStore_Cleanup(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
@@ -422,7 +452,7 @@ func TestSQLStore_CancelIdempotent(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	require.NoError(t, store.Cancel(ctx, j.Queue, j.ID))
@@ -446,7 +476,7 @@ func TestSQLStore_CompleteStateConflict(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	j := job.NewJob("report", []byte("payload"))
+	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
 	// 未抢占为 running 直接 Complete，应返回状态冲突而非 not found
@@ -459,7 +489,7 @@ func TestSQLStore_ListDefaultLimit(t *testing.T) {
 
 	ctx := context.Background()
 	for range 110 {
-		require.NoError(t, store.Save(ctx, job.NewJob("report", []byte("x"))))
+		require.NoError(t, store.Save(ctx, job.NewJob("report", []byte("\"x\""))))
 	}
 
 	jobs, err := store.List(ctx, job.JobFilter{})
