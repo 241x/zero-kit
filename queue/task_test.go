@@ -19,7 +19,7 @@ func TestNewTask(t *testing.T) {
 	assert.Equal(t, "test-queue", task.Queue)
 	assert.Equal(t, "test-type", task.Type)
 	assert.Equal(t, []byte("hello"), task.Payload)
-	assert.Equal(t, 3, task.MaxRetries)
+	assert.Equal(t, 0, task.MaxRetries)
 	assert.Equal(t, 0, task.RetryCount)
 	assert.Equal(t, queue.TaskStatusPending, task.Status)
 	assert.Equal(t, int64(0), task.DelayUntil)

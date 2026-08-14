@@ -496,3 +496,114 @@ func TestRedisQueue_IDReferenceDesign(t *testing.T) {
 	assert.Equal(t, task.ID, saved.ID)
 	assert.Equal(t, []byte("verify-id-design"), saved.Payload)
 }
+
+// ---------- 重试次数默认值测试 ----------
+
+func TestRedisQueue_Enqueue_InheritsQueueMaxRetries(t *testing.T) {
+	config := defaultTestConfig().WithMaxRetries(7)
+	q, cleanup := setupTestQueue(t, config)
+	defer cleanup()
+
+	ctx := context.Background()
+	task := queue.NewTask("test-queue", "inherit", []byte("data"))
+	require.NoError(t, q.Enqueue(ctx, task))
+
+	saved, err := q.GetTask(ctx, task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7, saved.MaxRetries)
+}
+
+func TestRedisQueue_Enqueue_PerTaskMaxRetriesOverrides(t *testing.T) {
+	config := defaultTestConfig().WithMaxRetries(7)
+	q, cleanup := setupTestQueue(t, config)
+	defer cleanup()
+
+	ctx := context.Background()
+	task := queue.NewTask("test-queue", "override", []byte("data")).WithMaxRetries(2)
+	require.NoError(t, q.Enqueue(ctx, task))
+
+	saved, err := q.GetTask(ctx, task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, saved.MaxRetries)
+}
+
+// ---------- 死信队列开关测试 ----------
+
+func TestRedisQueue_Nack_DeadLetterDisabled(t *testing.T) {
+	config := defaultTestConfig().WithMaxRetries(1).WithDeadLetter(false, 0)
+	q, cleanup := setupTestQueue(t, config)
+	defer cleanup()
+
+	ctx := context.Background()
+	task := queue.NewTask("test-queue", "fail", []byte("will-fail")).WithMaxRetries(1)
+	require.NoError(t, q.Enqueue(ctx, task))
+
+	// 第一次出队 + Nack → 延迟重试
+	dequeued, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, dequeued)
+	require.NoError(t, q.Nack(ctx, dequeued.ID, assert.AnError))
+
+	time.Sleep(3 * time.Second)
+
+	// 第二次出队 + Nack → 超过重试上限，未启用死信，直接标记失败
+	dequeued2, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, dequeued2)
+	require.NoError(t, q.Nack(ctx, dequeued2.ID, assert.AnError))
+
+	stats, err := q.GetStats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), stats.DeadLetter)
+
+	saved, err := q.GetTask(ctx, dequeued2.ID)
+	require.NoError(t, err)
+	assert.Equal(t, queue.TaskStatusFailed, saved.Status)
+}
+
+// ---------- 超时回收测试 ----------
+
+func TestRedisQueue_RecoverTimedOutTask(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	config := defaultTestConfig().
+		WithVisibilityTimeout(60).
+		WithScanIntervals(time.Second, 200*time.Millisecond)
+	q := queue.NewRedisQueue(client, config)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, q.StartCleanup(ctx))
+	defer q.Close()
+
+	task := queue.NewTask("test-queue", "recover", []byte("data"))
+	require.NoError(t, q.Enqueue(ctx, task))
+
+	dequeued, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, dequeued)
+	assert.Equal(t, task.ID, dequeued.ID)
+
+	// 模拟 worker 崩溃：删除可见性超时键，任务应被回收重新入队
+	timeoutKey := "ZEROKIT:QUEUE:test-queue:TIMEOUT:" + task.ID
+	require.NoError(t, client.Del(ctx, timeoutKey).Err())
+
+	require.Eventually(t, func() bool {
+		stats, err := q.GetStats(ctx)
+		if err != nil {
+			return false
+		}
+		return stats.Processing == 0 && stats.Pending == 1
+	}, 2*time.Second, 100*time.Millisecond)
+
+	recovered, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, recovered)
+	assert.Equal(t, task.ID, recovered.ID)
+}

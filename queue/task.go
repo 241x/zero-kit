@@ -29,7 +29,7 @@ type Task struct {
 	Queue       string            `json:"queue"`        // 队列名称
 	Payload     []byte            `json:"payload"`      // 任务数据
 	Type        string            `json:"type"`         // 任务类型
-	MaxRetries  int               `json:"max_retries"`  // 最大重试次数
+	MaxRetries  int               `json:"max_retries"`  // 最大重试次数，0 表示继承队列默认值
 	RetryCount  int               `json:"retry_count"`  // 当前重试次数
 	DelayUntil  int64             `json:"delay_until"`  // 延迟执行时间（Unix时间戳，秒）
 	CreatedAt   int64             `json:"created_at"`   // 任务创建时间
@@ -40,14 +40,14 @@ type Task struct {
 	Metadata    map[string]string `json:"metadata"`     // 元数据
 }
 
-// NewTask 创建新任务
+// NewTask 创建新任务，MaxRetries 默认为 0，入队时继承队列配置的默认重试次数
 func NewTask(queue, taskType string, payload []byte) *Task {
 	return &Task{
 		ID:         uuid.New().String(),
 		Queue:      queue,
 		Type:       taskType,
 		Payload:    payload,
-		MaxRetries: 3,
+		MaxRetries: 0,
 		RetryCount: 0,
 		DelayUntil: 0,
 		CreatedAt:  time.Now().Unix(),

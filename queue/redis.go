@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -100,6 +101,35 @@ var (
 		redis.call('HINCRBY', KEYS[5], 'dead_letter', 1)
 		return 1
 	`)
+
+	// nackFailScript 原子确认失败（未启用死信队列）：LREM ID + SET 更新任务 + DEL 超时键 + HINCRBY 统计
+	// KEYS[1]=processing key, KEYS[2]=task key, KEYS[3]=timeout key, KEYS[4]=stats key
+	// ARGV[1]=task ID, ARGV[2]=updated task JSON
+	nackFailScript = redis.NewScript(`
+		local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+		if removed == 0 then
+			return 0
+		end
+		redis.call('SET', KEYS[2], ARGV[2])
+		redis.call('DEL', KEYS[3])
+		redis.call('HINCRBY', KEYS[4], 'failed', 1)
+		return 1
+	`)
+
+	// recoverScript 将处理中但可见性超时键已消失（失联）的任务重新入队
+	// KEYS[1]=processing key, KEYS[2]=immediate key, ARGV[1]=timeout key prefix
+	recoverScript = redis.NewScript(`
+		local ids = redis.call('LRANGE', KEYS[1], 0, -1)
+		local requeued = 0
+		for _, id in ipairs(ids) do
+			if redis.call('EXISTS', ARGV[1] .. id) == 0 then
+				redis.call('LREM', KEYS[1], 1, id)
+				redis.call('LPUSH', KEYS[2], id)
+				requeued = requeued + 1
+			end
+		end
+		return requeued
+	`)
 )
 
 // RedisQueue 基于 Redis 的工作队列，队列只存任务 ID，详情独立存储，通过 Lua 脚本保证原子性。
@@ -117,12 +147,29 @@ type RedisQueue struct {
 	client *redis.Client
 	config QueueConfig
 	prefix string
+
+	cleanupMu     sync.Mutex
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
 }
 
 // NewRedisQueue 创建 Redis 队列实例，Redis 客户端由调用方管理生命周期
 func NewRedisQueue(client *redis.Client, config QueueConfig) *RedisQueue {
+	def := DefaultConfig()
 	if config.Name == "" {
-		config = DefaultConfig()
+		config.Name = def.Name
+	}
+	if config.Prefix == "" {
+		config.Prefix = def.Prefix
+	}
+	if config.VisibilityTimeout <= 0 {
+		config.VisibilityTimeout = def.VisibilityTimeout
+	}
+	if config.DelayQueueScanInterval <= 0 {
+		config.DelayQueueScanInterval = def.DelayQueueScanInterval
+	}
+	if config.ProcessingCleanupInterval <= 0 {
+		config.ProcessingCleanupInterval = def.ProcessingCleanupInterval
 	}
 
 	return &RedisQueue{
@@ -132,14 +179,27 @@ func NewRedisQueue(client *redis.Client, config QueueConfig) *RedisQueue {
 	}
 }
 
+// prepareTask 入队前补齐任务字段：重置状态、清空上次执行残留、继承队列默认重试次数
+func (q *RedisQueue) prepareTask(task *Task) {
+	task.Status = TaskStatusPending
+	task.Queue = q.config.Name
+	task.RetryCount = 0
+	task.Error = ""
+	task.StartedAt = 0
+	task.CompletedAt = 0
+	task.DelayUntil = 0
+	if task.MaxRetries <= 0 {
+		task.MaxRetries = q.config.MaxRetries
+	}
+}
+
 // Enqueue 立即入队任务
 func (q *RedisQueue) Enqueue(ctx context.Context, task *Task) error {
 	if task == nil {
 		return ErrNilTask
 	}
 
-	task.Status = TaskStatusPending
-	task.Queue = q.config.Name
+	q.prepareTask(task)
 
 	data, err := task.Marshal()
 	if err != nil {
@@ -163,8 +223,7 @@ func (q *RedisQueue) EnqueueWithDelay(ctx context.Context, task *Task, delay tim
 		return ErrNilTask
 	}
 
-	task.Status = TaskStatusPending
-	task.Queue = q.config.Name
+	q.prepareTask(task)
 	task.DelayUntil = time.Now().Add(delay).Unix()
 
 	data, err := task.Marshal()
@@ -273,22 +332,40 @@ func (q *RedisQueue) Nack(ctx context.Context, taskID string, taskErr error) err
 		task.Error = taskErr.Error()
 	}
 
-	// 超过最大重试次数 → 移入死信队列
+	// 超过最大重试次数 → 移入死信队列（或未启用死信时直接标记失败）
 	if task.RetryCount > task.MaxRetries {
-		task.Status = TaskStatusDeadLetter
 		task.CompletedAt = time.Now().Unix()
+		if q.config.EnableDeadLetter {
+			task.Status = TaskStatusDeadLetter
+		} else {
+			task.Status = TaskStatusFailed
+		}
 
 		updatedData, marshalErr := task.Marshal()
 		if marshalErr != nil {
 			return fmt.Errorf("marshal task failed: %w", marshalErr)
 		}
 
-		result, scriptErr := nackDeadLetterScript.Run(ctx, q.client,
-			[]string{q.processingKey(), q.taskKey(taskID), q.deadLetterKey(), q.timeoutKey(taskID), q.statsKey()},
+		if q.config.EnableDeadLetter {
+			result, scriptErr := nackDeadLetterScript.Run(ctx, q.client,
+				[]string{q.processingKey(), q.taskKey(taskID), q.deadLetterKey(), q.timeoutKey(taskID), q.statsKey()},
+				taskID, string(updatedData),
+			).Int64()
+			if scriptErr != nil {
+				return fmt.Errorf("nack to dead letter failed: %w", scriptErr)
+			}
+			if result == 0 {
+				return ErrTaskNotFound
+			}
+			return nil
+		}
+
+		result, scriptErr := nackFailScript.Run(ctx, q.client,
+			[]string{q.processingKey(), q.taskKey(taskID), q.timeoutKey(taskID), q.statsKey()},
 			taskID, string(updatedData),
 		).Int64()
 		if scriptErr != nil {
-			return fmt.Errorf("nack to dead letter failed: %w", scriptErr)
+			return fmt.Errorf("nack fail failed: %w", scriptErr)
 		}
 		if result == 0 {
 			return ErrTaskNotFound
@@ -394,8 +471,70 @@ func (q *RedisQueue) Purge(ctx context.Context) error {
 	return nil
 }
 
-// Close 释放队列资源（Redis 客户端由外部管理）
+// Close 释放队列资源（Redis 客户端由外部管理），并停止超时回收协程
 func (q *RedisQueue) Close() error {
+	q.StopCleanup()
+	return nil
+}
+
+// StartCleanup 启动超时任务回收协程，将处理中超时（失联）的任务重新入队
+func (q *RedisQueue) StartCleanup(ctx context.Context) error {
+	q.cleanupMu.Lock()
+	defer q.cleanupMu.Unlock()
+
+	if q.cleanupCancel != nil {
+		return nil
+	}
+
+	cleanupCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	q.cleanupCancel = cancel
+	q.cleanupDone = done
+
+	go q.runCleanup(cleanupCtx, done)
+	return nil
+}
+
+// StopCleanup 停止超时任务回收协程
+func (q *RedisQueue) StopCleanup() {
+	q.cleanupMu.Lock()
+	cancel := q.cleanupCancel
+	q.cleanupCancel = nil
+	done := q.cleanupDone
+	q.cleanupMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+}
+
+// runCleanup 周期性扫描处理中队列，回收超时任务
+func (q *RedisQueue) runCleanup(ctx context.Context, done chan struct{}) {
+	defer close(done)
+
+	ticker := time.NewTicker(q.config.ProcessingCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = q.recoverTimedOutTasks(ctx)
+		}
+	}
+}
+
+// recoverTimedOutTasks 将可见性超时键已消失的处理中任务重新入队
+func (q *RedisQueue) recoverTimedOutTasks(ctx context.Context) error {
+	_, err := recoverScript.Run(ctx, q.client,
+		[]string{q.processingKey(), q.immediateKey()},
+		q.prefix+"TIMEOUT:",
+	).Result()
+	if err != nil && err != redis.Nil {
+		return err
+	}
 	return nil
 }
 
@@ -406,10 +545,7 @@ func (q *RedisQueue) moveDelayedTasks(ctx context.Context) error {
 		[]string{q.delayedKey(), q.immediateKey()},
 		now, 100,
 	).Result()
-	if err != nil && err != redis.Nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // calculateRetryDelay 根据重试策略计算重试延迟
@@ -418,6 +554,9 @@ func (q *RedisQueue) calculateRetryDelay(retryCount int) time.Duration {
 	case RetryDelayFixed:
 		return 5 * time.Second
 	case RetryDelayExponential:
+		if retryCount > 12 {
+			return time.Hour
+		}
 		delay := time.Duration(1<<uint(retryCount)) * time.Second
 		if delay > time.Hour {
 			return time.Hour

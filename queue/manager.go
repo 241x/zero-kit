@@ -62,6 +62,11 @@ func (m *QueueManager) StartAllWorkerPools(ctx context.Context) error {
 		if err := pool.Start(ctx); err != nil {
 			return fmt.Errorf("start worker pool %s failed: %w", name, err)
 		}
+		if q := m.queues[name]; q != nil {
+			if err := q.StartCleanup(ctx); err != nil {
+				return fmt.Errorf("start cleanup for queue %s failed: %w", name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -75,6 +80,9 @@ func (m *QueueManager) StopAllWorkerPools() error {
 	for name, pool := range m.workerPools {
 		if err := pool.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("stop worker pool %s failed: %w", name, err))
+		}
+		if q := m.queues[name]; q != nil {
+			q.StopCleanup()
 		}
 	}
 	if len(errs) > 0 {
