@@ -24,6 +24,7 @@ func TestConfig_Validate(t *testing.T) {
 		{"negative retry delay", job.DefaultConfig().WithRetryDelay(-time.Second)},
 		{"negative retry max delay", job.DefaultConfig().WithRetryMaxDelay(-time.Second)},
 		{"zero cleanup interval", job.DefaultConfig().WithRetention(time.Hour).WithCleanupInterval(0)},
+		{"stale not greater than heartbeat", job.DefaultConfig().WithStaleTimeout(time.Second)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -83,7 +83,11 @@ func NewSQLStore(db *gorm.DB, opts ...SQLStoreOption) (*SQLStore, error) {
 	if store.tableName == "" {
 		store.tableName = defaultTableName
 	}
-	if err := db.Table(store.tableName).AutoMigrate(&jobRecord{}); err != nil {
+	// 显式指定 utf8mb4 字符集建表，避免沿用库/连接默认字符集导致中文/emoji 乱码。
+	// 连接字符集仍由调用方的 DSN 决定（见包注释），建表字符集此处兜底。
+	if err := db.
+		Set("gorm:table_options", "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci").
+		Table(store.tableName).AutoMigrate(&jobRecord{}); err != nil {
 		return nil, fmt.Errorf("migrate job table failed: %w", err)
 	}
 	return store, nil
@@ -259,6 +263,7 @@ func (s *SQLStore) Complete(ctx context.Context, queue, jobID string, attempt in
 	updates := map[string]any{
 		"status":       string(StatusSuccess),
 		"completed_at": time.Now().UnixMilli(),
+		"error":        "", // 清空最近错误，成功作业不残留重试阶段的失败信息
 	}
 	if len(result) > 0 {
 		updates["result"] = result

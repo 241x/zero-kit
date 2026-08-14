@@ -141,6 +141,9 @@ func (c Config) Validate() error {
 	if c.StaleTimeout <= 0 {
 		return errors.New("job: stale timeout must be greater than 0")
 	}
+	if c.StaleTimeout <= c.HeartbeatInterval {
+		return errors.New("job: stale timeout must be greater than heartbeat interval")
+	}
 	if c.RecoverInterval <= 0 {
 		return errors.New("job: recover interval must be greater than 0")
 	}

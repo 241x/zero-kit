@@ -268,7 +268,7 @@ func TestExecutor_StaleRecovery(t *testing.T) {
 	config := job.DefaultConfig().
 		WithStaleTimeout(10 * time.Millisecond).
 		WithRecoverInterval(20 * time.Millisecond).
-		WithHeartbeatInterval(30 * time.Millisecond)
+		WithHeartbeatInterval(5 * time.Millisecond)
 
 	var executed atomic.Int32
 	executor := job.NewExecutor(store, job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
