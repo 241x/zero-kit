@@ -319,3 +319,121 @@ func TestExecutor_StopTimeout(t *testing.T) {
 	require.ErrorIs(t, err, job.ErrStopTimeout)
 	assert.False(t, executor.IsRunning())
 }
+
+func TestExecutor_TypeDispatch(t *testing.T) {
+	executor, store, cleanup := setupTestExecutor(t, defaultTestConfig(), job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		t.Fatalf("default handler should not be called for type %q", j.Type)
+		return nil
+	}))
+	defer cleanup()
+
+	var called atomic.Int32
+	executor.Register("report", job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		called.Add(1)
+		j.Result = []byte("\"report-done\"")
+		return nil
+	}))
+	executor.Register("email", job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		called.Add(1)
+		j.Result = []byte("\"email-done\"")
+		return nil
+	}))
+
+	require.NoError(t, executor.Start(context.Background()))
+
+	report := job.NewJob("report", []byte("\"r\""))
+	email := job.NewJob("email", []byte("\"e\""))
+	require.NoError(t, store.Save(context.Background(), report))
+	require.NoError(t, store.Save(context.Background(), email))
+
+	require.Eventually(t, func() bool {
+		r, rErr := store.Get(context.Background(), report.ID)
+		e, eErr := store.Get(context.Background(), email.ID)
+		return rErr == nil && eErr == nil && r.Status == job.StatusSuccess && e.Status == job.StatusSuccess
+	}, 3*time.Second, 20*time.Millisecond)
+
+	r, _ := store.Get(context.Background(), report.ID)
+	e, _ := store.Get(context.Background(), email.ID)
+	assert.Equal(t, []byte("\"report-done\""), r.Result)
+	assert.Equal(t, []byte("\"email-done\""), e.Result)
+	assert.Equal(t, int32(2), called.Load())
+}
+
+func TestExecutor_NoHandlerFails(t *testing.T) {
+	db := openTestDB(t)
+	table := uniqueTableName()
+	store, err := job.NewSQLStore(db, job.WithTableName(table))
+	require.NoError(t, err)
+	defer dropTestTable(t, db, table)
+
+	// 无默认处理器，仅注册 report 类型
+	executor := job.NewExecutor(store, nil, fastRetryConfig())
+	executor.Register("report", job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		return nil
+	}))
+	require.NoError(t, executor.Start(context.Background()))
+	defer executor.Stop()
+
+	// 默认 MaxAttempts=1，无 handler 的作业应立即失败
+	j := job.NewJob("unknown", []byte("\"payload\""))
+	require.NoError(t, store.Save(context.Background(), j))
+
+	require.Eventually(t, func() bool {
+		got, err := store.Get(context.Background(), j.ID)
+		return err == nil && got.Status == job.StatusFailed
+	}, 3*time.Second, 20*time.Millisecond)
+
+	got, _ := store.Get(context.Background(), j.ID)
+	assert.Contains(t, got.Error, "no handler")
+}
+
+func TestExecutor_NoHandlerRetriesThenFails(t *testing.T) {
+	db := openTestDB(t)
+	table := uniqueTableName()
+	store, err := job.NewSQLStore(db, job.WithTableName(table))
+	require.NoError(t, err)
+	defer dropTestTable(t, db, table)
+
+	executor := job.NewExecutor(store, nil, fastRetryConfig())
+	executor.Register("report", job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		return nil
+	}))
+	require.NoError(t, executor.Start(context.Background()))
+	defer executor.Stop()
+
+	// MaxAttempts=2：无 handler 时先延迟重试一次，再最终失败
+	j := job.NewJob("unknown", []byte("\"payload\"")).WithMaxAttempts(2)
+	require.NoError(t, store.Save(context.Background(), j))
+
+	require.Eventually(t, func() bool {
+		got, err := store.Get(context.Background(), j.ID)
+		return err == nil && got.Status == job.StatusFailed && got.Attempts == 2
+	}, 5*time.Second, 20*time.Millisecond)
+
+	got, _ := store.Get(context.Background(), j.ID)
+	assert.Contains(t, got.Error, "no handler")
+}
+
+func TestExecutor_ProgressThrottleFlushesFinal(t *testing.T) {
+	config := defaultTestConfig().WithProgressInterval(time.Second)
+	executor, store, cleanup := setupTestExecutor(t, config, job.HandlerFunc(func(ctx context.Context, j *job.Job) error {
+		job.ReportProgress(ctx, 10)
+		job.ReportProgress(ctx, 40)
+		job.ReportProgress(ctx, 90) // 最后一次在节流窗口内，依赖终态前 flush
+		return nil
+	}))
+	defer cleanup()
+
+	require.NoError(t, executor.Start(context.Background()))
+
+	j := job.NewJob("report", []byte("\"payload\""))
+	require.NoError(t, store.Save(context.Background(), j))
+
+	require.Eventually(t, func() bool {
+		got, err := store.Get(context.Background(), j.ID)
+		return err == nil && got.Status == job.StatusSuccess
+	}, 3*time.Second, 20*time.Millisecond)
+
+	got, _ := store.Get(context.Background(), j.ID)
+	assert.Equal(t, 90, got.Progress)
+}

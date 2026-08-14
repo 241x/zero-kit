@@ -20,10 +20,11 @@ var ErrStopTimeout = errors.New("job: executor stop timed out")
 
 // Executor 消费 pending 作业并执行，负责心跳保活、进度上报、失败重试与失联恢复。
 type Executor struct {
-	store   Store
-	handler Handler
-	config  Config
-	logger  logger.Logger
+	store    Store
+	handler  Handler            // 默认处理器（未注册类型时回退到此）
+	handlers map[string]Handler // 按作业类型注册的处理器
+	config   Config
+	logger   logger.Logger
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -33,20 +34,41 @@ type Executor struct {
 	mu      sync.Mutex
 }
 
-// NewExecutor 创建作业执行器
+// NewExecutor 创建作业执行器。
+// handler 作为默认处理器：未通过 Register 注册的类型会回退到它；
+// 若所有类型都通过 Register 注册，handler 可传 nil。
 func NewExecutor(store Store, handler Handler, config Config) *Executor {
 	return &Executor{
-		store:   store,
-		handler: handler,
-		config:  config,
-		logger:  logger.Nop(),
+		store:    store,
+		handler:  handler,
+		handlers: make(map[string]Handler),
+		config:   config,
+		logger:   logger.Nop(),
 	}
 }
 
-// WithLogger 设置执行器的日志实例
+// WithLogger 设置执行器的日志实例，需在 Start 之前调用。
 func (e *Executor) WithLogger(log logger.Logger) *Executor {
 	e.logger = log
 	return e
+}
+
+// Register 为指定作业类型注册处理器，需在 Start 之前调用。
+// 空类型或 nil 处理器会被忽略。未注册的类型回退到 NewExecutor 传入的默认处理器。
+func (e *Executor) Register(jobType string, handler Handler) *Executor {
+	if jobType == "" || handler == nil {
+		return e
+	}
+	e.handlers[jobType] = handler
+	return e
+}
+
+// resolveHandler 返回作业类型对应的处理器，未注册时回退到默认处理器。
+func (e *Executor) resolveHandler(jobType string) Handler {
+	if h, ok := e.handlers[jobType]; ok && h != nil {
+		return h
+	}
+	return e.handler
 }
 
 // Start 启动执行器，为每个队列创建 config.Concurrency 个执行协程及维护协程
@@ -60,7 +82,7 @@ func (e *Executor) Start(ctx context.Context) error {
 	if e.store == nil {
 		return errors.New("job: store cannot be nil")
 	}
-	if e.handler == nil {
+	if e.handler == nil && len(e.handlers) == 0 {
 		return errors.New("job: handler cannot be nil")
 	}
 	if len(e.config.Queues) == 0 {
@@ -163,10 +185,17 @@ func (e *Executor) worker(queue string) {
 	}
 }
 
-// execute 执行单个作业，维护心跳并写入终态或重试
+// execute 执行单个作业：按类型分发处理器，维护心跳，写入终态或重试。
 func (e *Executor) execute(job *Job) {
 	log := e.logger.With("job_id", job.ID, "job_type", job.Type, "queue", job.Queue)
 	log.Info("job started", "attempt", job.Attempts)
+
+	// 按类型分发；无对应处理器时走重试/失败兜底，避免作业永久悬挂。
+	handler := e.resolveHandler(job.Type)
+	if handler == nil {
+		e.fallbackNoHandler(job, log)
+		return
+	}
 
 	ctx, cancel := context.WithCancel(e.ctx)
 	defer cancel()
@@ -176,12 +205,9 @@ func (e *Executor) execute(job *Job) {
 		defer timeoutCancel()
 	}
 
-	// 进度上报：handler 通过 ReportProgress 直接落库
-	ctx = withProgress(ctx, func(p int) {
-		if _, err := e.store.Heartbeat(e.ctx, job.Queue, job.ID, job.Attempts, p); err != nil {
-			log.Warn("report progress failed", "error", err)
-		}
-	})
+	// 进度上报：节流合并高频上报，作业结束前统一 flush，避免丢失最终进度。
+	throttle := newProgressThrottle(e.store, e.ctx, job, e.config.ProgressInterval, log)
+	ctx = withProgress(ctx, throttle.report)
 
 	// 心跳协程：周期保活，并在作业被取消时终止执行。
 	// 当作业上下文被取消（超时或执行器停止）时停止心跳，
@@ -214,9 +240,12 @@ func (e *Executor) execute(job *Job) {
 	})
 
 	// 执行作业
-	err := e.runHandler(ctx, job, log)
+	err := e.runHandler(ctx, job, handler, log)
 	close(heartbeatDone)
 	heartbeatWg.Wait()
+
+	// 终态写入前 flush 最新进度，确保被节流合并的进度不丢失。
+	throttle.flush()
 
 	// 写入终态（使用执行器 ctx，独立于 handler 超时，同时保证 Stop 可快速返回）
 	if err == nil {
@@ -253,15 +282,108 @@ func (e *Executor) execute(job *Job) {
 	}
 }
 
+// fallbackNoHandler 处理无对应处理器的作业：复用重试/失败路径。
+// 有重试余量时按退避延迟重新入队（兼容滚动发布窗口），否则标记最终失败。
+func (e *Executor) fallbackNoHandler(job *Job, log logger.Logger) {
+	msg := fmt.Sprintf("no handler registered for job type %q", job.Type)
+	failure := Failure{
+		Error: msg,
+		Errors: appendError(job.Errors, AttemptError{
+			Attempt: job.Attempts,
+			At:      time.Now().UnixMilli(),
+			Error:   msg,
+		}),
+	}
+
+	if job.Attempts >= job.MaxAttempts {
+		log.Err(errors.New(msg), "job failed permanently", "attempts", job.Attempts)
+		if failErr := e.store.Fail(e.ctx, job.Queue, job.ID, job.Attempts, failure); failErr != nil {
+			log.Error("mark job failed error", "error", failErr)
+		}
+		return
+	}
+
+	retryAt := time.Now().Add(e.retryDelayJittered(job.Attempts))
+	log.Warn("no handler for job type, scheduling retry", "attempts", job.Attempts, "scheduled_at", retryAt)
+	if retryErr := e.store.Retry(e.ctx, job.Queue, job.ID, job.Attempts, retryAt, failure); retryErr != nil {
+		log.Error("schedule job retry error", "error", retryErr)
+	}
+}
+
 // runHandler 执行作业处理器，捕获 panic 避免拖垮整个进程
-func (e *Executor) runHandler(ctx context.Context, job *Job, log logger.Logger) (err error) {
+func (e *Executor) runHandler(ctx context.Context, job *Job, handler Handler, log logger.Logger) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("handler panic: %v\n%s", r, trimStack(debug.Stack()))
 			log.Error("handler panicked", "panic", r)
 		}
 	}()
-	return e.handler.Execute(ctx, job)
+	return handler.Execute(ctx, job)
+}
+
+// progressThrottle 合并高频进度上报，按间隔节流落库；作业结束前需调用 flush。
+type progressThrottle struct {
+	store    Store
+	writeCtx context.Context
+	queue    string
+	jobID    string
+	attempt  int
+	interval time.Duration
+	log      logger.Logger
+
+	mu         sync.Mutex
+	pending    int
+	hasPending bool
+	lastWrite  time.Time
+}
+
+// newProgressThrottle 创建进度上报节流器。interval <= 0 时不节流（每次立即落库）。
+func newProgressThrottle(store Store, writeCtx context.Context, job *Job, interval time.Duration, log logger.Logger) *progressThrottle {
+	return &progressThrottle{
+		store:    store,
+		writeCtx: writeCtx,
+		queue:    job.Queue,
+		jobID:    job.ID,
+		attempt:  job.Attempts,
+		interval: interval,
+		log:      log,
+	}
+}
+
+// report 记录最新进度，并按节流间隔决定是否立即落库。
+func (t *progressThrottle) report(progress int) {
+	t.mu.Lock()
+	t.pending = progress
+	t.hasPending = true
+	shouldFlush := t.interval <= 0 || time.Since(t.lastWrite) >= t.interval
+	t.mu.Unlock()
+	if shouldFlush {
+		t.flush()
+	}
+}
+
+// flush 将尚未落库的最新进度写入存储；无待写进度时为空操作。
+func (t *progressThrottle) flush() {
+	t.mu.Lock()
+	if !t.hasPending {
+		t.mu.Unlock()
+		return
+	}
+	progress := t.pending
+	t.mu.Unlock()
+
+	if _, err := t.store.Heartbeat(t.writeCtx, t.queue, t.jobID, t.attempt, progress); err != nil {
+		t.log.Warn("report progress failed", "error", err)
+		return
+	}
+
+	t.mu.Lock()
+	// 仅当期间无新进度时清除待写标记，避免覆盖并发上报的最新值。
+	if t.pending == progress {
+		t.hasPending = false
+		t.lastWrite = time.Now()
+	}
+	t.mu.Unlock()
 }
 
 // maintain 维护协程：周期执行失联恢复与终态清理

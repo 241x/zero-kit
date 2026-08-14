@@ -30,6 +30,7 @@ type Config struct {
 	Retention         time.Duration // 终态作业保留时长（0 表示永久保留，不自动清理）
 	CleanupInterval   time.Duration // 终态作业清理间隔（Retention > 0 时生效）
 	ShutdownTimeout   time.Duration // 优雅停止等待处理器退出的超时（0 使用默认 30s）
+	ProgressInterval  time.Duration // 进度上报节流间隔（合并高频上报，0 表示不节流）
 }
 
 // DefaultConfig 返回默认配置
@@ -48,6 +49,7 @@ func DefaultConfig() Config {
 		Retention:         0,
 		CleanupInterval:   time.Minute,
 		ShutdownTimeout:   30 * time.Second,
+		ProgressInterval:  time.Second,
 	}
 }
 
@@ -129,6 +131,12 @@ func (c Config) WithShutdownTimeout(timeout time.Duration) Config {
 	return c
 }
 
+// WithProgressInterval 设置进度上报节流间隔（0 表示不节流，每次上报立即落库）
+func (c Config) WithProgressInterval(interval time.Duration) Config {
+	c.ProgressInterval = interval
+	return c
+}
+
 // Validate 校验配置合法性，返回首个不合法的配置项错误。
 // 零值或负值的周期配置会导致 ticker panic 或失联判定失效，因此必须在启动前校验。
 func (c Config) Validate() error {
@@ -158,6 +166,9 @@ func (c Config) Validate() error {
 	}
 	if c.ShutdownTimeout < 0 {
 		return errors.New("job: shutdown timeout must not be negative")
+	}
+	if c.ProgressInterval < 0 {
+		return errors.New("job: progress interval must not be negative")
 	}
 	return nil
 }

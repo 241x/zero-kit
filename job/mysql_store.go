@@ -309,6 +309,7 @@ func (s *SQLStore) Retry(ctx context.Context, queue, jobID string, attempt int, 
 		Updates(map[string]any{
 			"status":       string(StatusPending),
 			"scheduled_at": retryAt.UnixMilli(),
+			"progress":     0, // 重试时进度归零，避免残留上次失败进度误导前端
 			"error":        failure.Error,
 			"errors":       string(errorsJSON),
 		})
@@ -357,6 +358,7 @@ func (s *SQLStore) Requeue(ctx context.Context, queue, jobID string) error {
 			"status":       string(StatusPending),
 			"scheduled_at": time.Now().UnixMilli(),
 			"started_at":   int64(0),
+			"progress":     0, // 重新入队时进度归零
 			"error":        "",
 		})
 	if res.Error != nil {
