@@ -86,7 +86,7 @@ func TestSQLStore_WithTableName(t *testing.T) {
 	require.NotNil(t, popped)
 	assert.Equal(t, j.ID, popped.ID)
 
-	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, []byte("\"result\"")))
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, 1, []byte("\"result\"")))
 
 	// 自定义表中可查询到作业，默认表未被创建
 	var rec struct {
@@ -160,7 +160,7 @@ func TestSQLStore_Complete(t *testing.T) {
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
 
-	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, []byte("\"result\"")))
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, 1, []byte("\"result\"")))
 
 	got, err := store.Get(ctx, j.ID)
 	require.NoError(t, err)
@@ -184,7 +184,7 @@ func TestSQLStore_Fail(t *testing.T) {
 		Error:  "boom",
 		Errors: []job.AttemptError{{Attempt: 1, Error: "boom"}},
 	}
-	require.NoError(t, store.Fail(ctx, j.Queue, j.ID, failure))
+	require.NoError(t, store.Fail(ctx, j.Queue, j.ID, 1, failure))
 
 	got, err := store.Get(ctx, j.ID)
 	require.NoError(t, err)
@@ -219,7 +219,7 @@ func TestSQLStore_Heartbeat(t *testing.T) {
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
 
-	running, err := store.Heartbeat(ctx, j.Queue, j.ID, 42)
+	running, err := store.Heartbeat(ctx, j.Queue, j.ID, 1, 42)
 	require.NoError(t, err)
 	assert.True(t, running)
 
@@ -237,7 +237,7 @@ func TestSQLStore_HeartbeatNotRunning(t *testing.T) {
 	j := job.NewJob("report", []byte("\"payload\""))
 	require.NoError(t, store.Save(ctx, j))
 
-	running, err := store.Heartbeat(ctx, j.Queue, j.ID, 0)
+	running, err := store.Heartbeat(ctx, j.Queue, j.ID, 0, 0)
 	require.NoError(t, err)
 	assert.False(t, running)
 }
@@ -253,7 +253,7 @@ func TestSQLStore_Retry(t *testing.T) {
 	require.NoError(t, err)
 
 	retryAt := time.Now().Add(10 * time.Second)
-	require.NoError(t, store.Retry(ctx, j.Queue, j.ID, retryAt, job.Failure{Error: "boom"}))
+	require.NoError(t, store.Retry(ctx, j.Queue, j.ID, 1, retryAt, job.Failure{Error: "boom"}))
 
 	got, err := store.Get(ctx, j.ID)
 	require.NoError(t, err)
@@ -273,7 +273,7 @@ func TestSQLStore_RetryBecomesPoppable(t *testing.T) {
 	require.NoError(t, err)
 
 	// 重试时间已过，作业应立即可被再次弹出
-	require.NoError(t, store.Retry(ctx, j.Queue, j.ID, time.Now().Add(-time.Second), job.Failure{Error: "boom"}))
+	require.NoError(t, store.Retry(ctx, j.Queue, j.ID, 1, time.Now().Add(-time.Second), job.Failure{Error: "boom"}))
 
 	got, err := store.Get(ctx, j.ID)
 	require.NoError(t, err)
@@ -358,7 +358,7 @@ func TestSQLStore_GetStats(t *testing.T) {
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
-	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, nil))
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, 1, nil))
 
 	stats, err := store.GetStats(ctx, j.Queue)
 	require.NoError(t, err)
@@ -416,7 +416,7 @@ func TestSQLStore_ListByStatus(t *testing.T) {
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
-	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, nil))
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, 1, nil))
 
 	jobs, err := store.List(ctx, job.JobFilter{Status: job.StatusSuccess})
 	require.NoError(t, err)
@@ -437,7 +437,7 @@ func TestSQLStore_Cleanup(t *testing.T) {
 	require.NoError(t, store.Save(ctx, j))
 	_, err := store.PopPending(ctx, j.Queue)
 	require.NoError(t, err)
-	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, nil))
+	require.NoError(t, store.Complete(ctx, j.Queue, j.ID, 1, nil))
 
 	n, err := store.Cleanup(ctx, 0)
 	require.NoError(t, err)
@@ -480,7 +480,7 @@ func TestSQLStore_CompleteStateConflict(t *testing.T) {
 	require.NoError(t, store.Save(ctx, j))
 
 	// 未抢占为 running 直接 Complete，应返回状态冲突而非 not found
-	assert.ErrorIs(t, store.Complete(ctx, j.Queue, j.ID, nil), job.ErrJobStateConflict)
+	assert.ErrorIs(t, store.Complete(ctx, j.Queue, j.ID, 0, nil), job.ErrJobStateConflict)
 }
 
 func TestSQLStore_ListDefaultLimit(t *testing.T) {

@@ -27,19 +27,20 @@ type Store interface {
 
 	// Heartbeat 更新 running 作业的心跳与进度，返回作业是否仍处于 running 状态。
 	// progress < 0 表示不更新进度，仅刷新心跳。
-	Heartbeat(ctx context.Context, queue, jobID string, progress int) (bool, error)
+	// attempt 为当前执行尝试（乐观锁版本号），与库中不匹配时返回 running=false。
+	Heartbeat(ctx context.Context, queue, jobID string, attempt, progress int) (bool, error)
 
 	// Complete 标记 running 作业为 success 并写入结果。
-	// 作业不在 running 状态（如已被取消/完成）时返回 ErrJobStateConflict。
-	Complete(ctx context.Context, queue, jobID string, result []byte) error
+	// 作业不在 running 状态或 attempt 不匹配（已被重新调度）时返回 ErrJobStateConflict。
+	Complete(ctx context.Context, queue, jobID string, attempt int, result []byte) error
 
 	// Fail 标记 running 作业为 failed（最终失败），并记录错误信息。
-	// 作业不在 running 状态时返回 ErrJobStateConflict。
-	Fail(ctx context.Context, queue, jobID string, failure Failure) error
+	// 作业不在 running 状态或 attempt 不匹配时返回 ErrJobStateConflict。
+	Fail(ctx context.Context, queue, jobID string, attempt int, failure Failure) error
 
 	// Retry 将失败的 running 作业重新入队为 pending，并将下次可执行时间设为 retryAt。
-	// 作业不在 running 状态时返回 ErrJobStateConflict。
-	Retry(ctx context.Context, queue, jobID string, retryAt time.Time, failure Failure) error
+	// 作业不在 running 状态或 attempt 不匹配时返回 ErrJobStateConflict。
+	Retry(ctx context.Context, queue, jobID string, attempt int, retryAt time.Time, failure Failure) error
 
 	// Cancel 取消作业（pending/running → cancelled）。
 	// 幂等：作业已处于终态时返回 nil；作业不存在时返回 ErrJobNotFound。

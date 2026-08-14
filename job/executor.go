@@ -178,12 +178,14 @@ func (e *Executor) execute(job *Job) {
 
 	// 进度上报：handler 通过 ReportProgress 直接落库
 	ctx = withProgress(ctx, func(p int) {
-		if _, err := e.store.Heartbeat(e.ctx, job.Queue, job.ID, p); err != nil {
+		if _, err := e.store.Heartbeat(e.ctx, job.Queue, job.ID, job.Attempts, p); err != nil {
 			log.Warn("report progress failed", "error", err)
 		}
 	})
 
-	// 心跳协程：周期保活，并在作业被取消时终止执行
+	// 心跳协程：周期保活，并在作业被取消时终止执行。
+	// 当作业上下文被取消（超时或执行器停止）时停止心跳，
+	// 使卡死的处理器不再被保活，作业可被失联恢复接管。
 	heartbeatDone := make(chan struct{})
 	var heartbeatWg sync.WaitGroup
 	heartbeatWg.Go(func() {
@@ -193,8 +195,10 @@ func (e *Executor) execute(job *Job) {
 			select {
 			case <-heartbeatDone:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.C:
-				running, err := e.store.Heartbeat(e.ctx, job.Queue, job.ID, -1)
+				running, err := e.store.Heartbeat(e.ctx, job.Queue, job.ID, job.Attempts, -1)
 				if err != nil {
 					log.Warn("job heartbeat failed", "error", err)
 					continue
@@ -217,7 +221,7 @@ func (e *Executor) execute(job *Job) {
 	// 写入终态（使用执行器 ctx，独立于 handler 超时，同时保证 Stop 可快速返回）
 	if err == nil {
 		log.Info("job completed")
-		if completeErr := e.store.Complete(e.ctx, job.Queue, job.ID, job.Result); completeErr != nil {
+		if completeErr := e.store.Complete(e.ctx, job.Queue, job.ID, job.Attempts, job.Result); completeErr != nil {
 			log.Error("mark job completed error", "error", completeErr)
 		}
 		return
@@ -236,7 +240,7 @@ func (e *Executor) execute(job *Job) {
 	// 超过最大执行次数则最终失败，否则进入待重试
 	if job.Attempts >= job.MaxAttempts {
 		log.Err(err, "job failed permanently", "attempts", job.Attempts)
-		if failErr := e.store.Fail(e.ctx, job.Queue, job.ID, failure); failErr != nil {
+		if failErr := e.store.Fail(e.ctx, job.Queue, job.ID, job.Attempts, failure); failErr != nil {
 			log.Error("mark job failed error", "error", failErr)
 		}
 		return
@@ -244,7 +248,7 @@ func (e *Executor) execute(job *Job) {
 
 	retryAt := time.Now().Add(e.retryDelayJittered(job.Attempts))
 	log.Warn("job failed, scheduling retry", "attempts", job.Attempts, "scheduled_at", retryAt)
-	if retryErr := e.store.Retry(e.ctx, job.Queue, job.ID, retryAt, failure); retryErr != nil {
+	if retryErr := e.store.Retry(e.ctx, job.Queue, job.ID, job.Attempts, retryAt, failure); retryErr != nil {
 		log.Error("schedule job retry error", "error", retryErr)
 	}
 }
@@ -318,7 +322,7 @@ func (e *Executor) recoverStale(queue string) {
 					Error:   "job exceeded max attempts",
 				}),
 			}
-			if failErr := e.store.Fail(e.ctx, queue, job.ID, failure); failErr != nil {
+			if failErr := e.store.Fail(e.ctx, queue, job.ID, job.Attempts, failure); failErr != nil {
 				log.Error("mark stale job failed error", "error", failErr)
 			}
 			continue

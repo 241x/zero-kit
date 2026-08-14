@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -159,11 +160,12 @@ func (s *SQLStore) PopPending(ctx context.Context, queue string) (*Job, error) {
 	for {
 		job, err := s.popOnce(ctx, queue)
 		if errors.Is(err, errPopConflict) {
-			// 抢占冲突：尊重 ctx 取消，避免忙等
+			// 抢占冲突：让出 CPU 避免忙等，同时尊重 ctx 取消
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			default:
+				runtime.Gosched()
 				continue
 			}
 		}
@@ -237,14 +239,14 @@ func isLockError(err error) bool {
 }
 
 // Heartbeat 更新心跳与进度，返回是否仍处于 running 状态
-func (s *SQLStore) Heartbeat(ctx context.Context, queue, jobID string, progress int) (bool, error) {
+func (s *SQLStore) Heartbeat(ctx context.Context, queue, jobID string, attempt, progress int) (bool, error) {
 	updates := map[string]any{"heartbeat_at": time.Now().UnixMilli()}
 	if progress >= 0 {
 		updates["progress"] = progress
 	}
 
 	res := s.scope(ctx).Model(&jobRecord{}).
-		Where("queue = ? AND id = ? AND status = ?", queue, jobID, StatusRunning).
+		Where("queue = ? AND id = ? AND status = ? AND attempts = ?", queue, jobID, StatusRunning, attempt).
 		Updates(updates)
 	if res.Error != nil {
 		return false, fmt.Errorf("heartbeat failed: %w", res.Error)
@@ -253,7 +255,7 @@ func (s *SQLStore) Heartbeat(ctx context.Context, queue, jobID string, progress 
 }
 
 // Complete 标记作业成功
-func (s *SQLStore) Complete(ctx context.Context, queue, jobID string, result []byte) error {
+func (s *SQLStore) Complete(ctx context.Context, queue, jobID string, attempt int, result []byte) error {
 	updates := map[string]any{
 		"status":       string(StatusSuccess),
 		"completed_at": time.Now().UnixMilli(),
@@ -263,7 +265,7 @@ func (s *SQLStore) Complete(ctx context.Context, queue, jobID string, result []b
 	}
 
 	res := s.scope(ctx).Model(&jobRecord{}).
-		Where("queue = ? AND id = ? AND status = ?", queue, jobID, StatusRunning).
+		Where("queue = ? AND id = ? AND status = ? AND attempts = ?", queue, jobID, StatusRunning, attempt).
 		Updates(updates)
 	if res.Error != nil {
 		return fmt.Errorf("complete job failed: %w", res.Error)
@@ -275,10 +277,10 @@ func (s *SQLStore) Complete(ctx context.Context, queue, jobID string, result []b
 }
 
 // Fail 标记作业最终失败
-func (s *SQLStore) Fail(ctx context.Context, queue, jobID string, failure Failure) error {
+func (s *SQLStore) Fail(ctx context.Context, queue, jobID string, attempt int, failure Failure) error {
 	errorsJSON, _ := json.Marshal(failure.Errors)
 	res := s.scope(ctx).Model(&jobRecord{}).
-		Where("queue = ? AND id = ? AND status = ?", queue, jobID, StatusRunning).
+		Where("queue = ? AND id = ? AND status = ? AND attempts = ?", queue, jobID, StatusRunning, attempt).
 		Updates(map[string]any{
 			"status":       string(StatusFailed),
 			"completed_at": time.Now().UnixMilli(),
@@ -295,10 +297,10 @@ func (s *SQLStore) Fail(ctx context.Context, queue, jobID string, failure Failur
 }
 
 // Retry 将失败的 running 作业重新入队为 pending，并将下次可执行时间设为 retryAt
-func (s *SQLStore) Retry(ctx context.Context, queue, jobID string, retryAt time.Time, failure Failure) error {
+func (s *SQLStore) Retry(ctx context.Context, queue, jobID string, attempt int, retryAt time.Time, failure Failure) error {
 	errorsJSON, _ := json.Marshal(failure.Errors)
 	res := s.scope(ctx).Model(&jobRecord{}).
-		Where("queue = ? AND id = ? AND status = ?", queue, jobID, StatusRunning).
+		Where("queue = ? AND id = ? AND status = ? AND attempts = ?", queue, jobID, StatusRunning, attempt).
 		Updates(map[string]any{
 			"status":       string(StatusPending),
 			"scheduled_at": retryAt.UnixMilli(),
